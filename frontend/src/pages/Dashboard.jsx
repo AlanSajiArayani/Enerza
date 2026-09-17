@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
-import { Zap, TrendingDown, IndianRupee, Activity, Lightbulb } from 'lucide-react';
+import { Zap, TrendingDown, IndianRupee, Activity, Lightbulb, Play, Pause, RotateCcw, Clock } from 'lucide-react';
 import { getDashboardSummary } from '../services/api';
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6', '#f43f5e'];
@@ -28,19 +28,94 @@ const KPICard = ({ title, value, icon, trend, subtext }) => (
   </div>
 );
 
+const formatSimTime = (isoString) => {
+  if (!isoString) return 'Loading simulation...';
+  const d = new Date(isoString);
+  if (isNaN(d.getTime())) return isoString;
+  const dateStr = d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+  const timeStr = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  return `${dateStr} • ${timeStr}`;
+};
+
 const Dashboard = () => {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [currentSimTime, setCurrentSimTime] = useState(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [speed, setSpeed] = useState(60);
+  const [datasetBounds, setDatasetBounds] = useState({ start: null, end: null });
 
-  useEffect(() => {
-    getDashboardSummary().then(res => {
+  const fetchDashboard = (simTime) => {
+    getDashboardSummary(simTime).then(res => {
       setData(res);
       setLoading(false);
+      if (res.simulation_time && !currentSimTime) {
+        setCurrentSimTime(res.simulation_time);
+      }
+      if (res.dataset_start && res.dataset_end) {
+        setDatasetBounds({ start: res.dataset_start, end: res.dataset_end });
+      }
     }).catch(err => {
       console.error(err);
       setLoading(false);
     });
+  };
+
+  useEffect(() => {
+    fetchDashboard(null);
   }, []);
+
+  useEffect(() => {
+    if (!isPlaying || !currentSimTime) return;
+
+    const interval = setInterval(() => {
+      setCurrentSimTime(prevTime => {
+        if (!prevTime) return prevTime;
+        const prevMs = new Date(prevTime).getTime();
+        const nextMs = prevMs + speed * 10000;
+        const endMs = datasetBounds.end ? new Date(datasetBounds.end).getTime() : Infinity;
+        
+        if (nextMs >= endMs) {
+          setIsPlaying(false);
+          return datasetBounds.end;
+        }
+        
+        const nextIso = new Date(nextMs).toISOString();
+        fetchDashboard(nextIso);
+        return nextIso;
+      });
+    }, 2500);
+
+    return () => clearInterval(interval);
+  }, [isPlaying, speed, currentSimTime, datasetBounds]);
+
+  const handleSliderChange = (e) => {
+    if (!datasetBounds.start || !datasetBounds.end) return;
+    const startMs = new Date(datasetBounds.start).getTime();
+    const endMs = new Date(datasetBounds.end).getTime();
+    const pct = Number(e.target.value) / 100;
+    const selectedMs = startMs + pct * (endMs - startMs);
+    const selectedIso = new Date(selectedMs).toISOString();
+    setCurrentSimTime(selectedIso);
+    fetchDashboard(selectedIso);
+  };
+
+  const getSliderValue = () => {
+    if (!currentSimTime || !datasetBounds.start || !datasetBounds.end) return 50;
+    const startMs = new Date(datasetBounds.start).getTime();
+    const endMs = new Date(datasetBounds.end).getTime();
+    const curMs = new Date(currentSimTime).getTime();
+    if (endMs <= startMs) return 50;
+    return Math.min(100, Math.max(0, ((curMs - startMs) / (endMs - startMs)) * 100));
+  };
+
+  const handleReset = () => {
+    setIsPlaying(false);
+    if (datasetBounds.start) {
+      setCurrentSimTime(datasetBounds.start);
+      fetchDashboard(datasetBounds.start);
+    }
+  };
 
   if (loading) {
     return (
@@ -54,15 +129,91 @@ const Dashboard = () => {
 
   return (
     <div className="space-y-6 pb-12 animate-in fade-in duration-500">
-      <header className="flex justify-between items-end mb-8">
+      <header className="flex justify-between items-end mb-6">
         <div>
           <h1 className="text-3xl font-bold text-white mb-2">Energy Intelligence</h1>
-          <p className="text-slate-400">Your household consumption summary for today.</p>
+          <p className="text-slate-400">Replaying historical REFIT smart-meter measurements.</p>
         </div>
         <div className="px-4 py-2 bg-blue-500/10 text-blue-400 text-sm font-medium rounded-full border border-blue-500/20">
-          {data.status}
+          {data.data_source || data.status}
         </div>
       </header>
+
+      {/* Replay Control Bar */}
+      <div className="glass-panel p-5 rounded-2xl border border-blue-500/20 bg-slate-900/80 space-y-4">
+        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+          <div className="flex items-center space-x-3">
+            <div className="p-2.5 bg-blue-500/20 text-blue-400 rounded-xl">
+              <Clock size={22} />
+            </div>
+            <div>
+              <div className="flex items-center space-x-2">
+                <span className="text-xs font-bold uppercase tracking-wider text-blue-400">Historical Replay</span>
+                <span className="text-slate-500">•</span>
+                <span className="text-xs text-slate-400">REFIT House 1</span>
+              </div>
+              <div className="text-xl font-bold text-white tracking-tight mt-0.5">
+                {formatSimTime(currentSimTime || data.simulation_time)}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center space-x-3 w-full md:w-auto justify-end">
+            <button 
+              onClick={() => setIsPlaying(!isPlaying)}
+              className={`flex items-center space-x-2 px-5 py-2.5 rounded-xl font-medium text-sm transition-all ${
+                isPlaying 
+                  ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30 hover:bg-amber-500/30' 
+                  : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/30'
+              }`}
+            >
+              {isPlaying ? <Pause size={18} /> : <Play size={18} />}
+              <span>{isPlaying ? 'Pause' : 'Play'}</span>
+            </button>
+
+            <div className="flex items-center space-x-1 bg-slate-800 p-1 rounded-xl border border-slate-700">
+              {[1, 10, 60, 300].map(s => (
+                <button
+                  key={s}
+                  onClick={() => setSpeed(s)}
+                  className={`px-3 py-1 text-xs font-semibold rounded-lg transition-all ${
+                    speed === s 
+                      ? 'bg-blue-500 text-white shadow-sm' 
+                      : 'text-slate-400 hover:text-white hover:bg-slate-700'
+                  }`}
+                >
+                  {s}x
+                </button>
+              ))}
+            </div>
+
+            <button 
+              onClick={handleReset}
+              className="p-2.5 bg-slate-800 hover:bg-slate-700 rounded-xl text-slate-400 hover:text-white transition-colors border border-slate-700"
+              title="Reset Replay Timeline"
+            >
+              <RotateCcw size={18} />
+            </button>
+          </div>
+        </div>
+
+        {/* Timeline Slider */}
+        <div className="pt-2">
+          <input 
+            type="range"
+            min="0"
+            max="100"
+            step="0.1"
+            value={getSliderValue()}
+            onChange={handleSliderChange}
+            className="w-full accent-blue-500 cursor-pointer h-2 bg-slate-800 rounded-lg appearance-none"
+          />
+          <div className="flex justify-between text-xs text-slate-500 mt-1">
+            <span>{datasetBounds.start ? new Date(datasetBounds.start).toLocaleDateString('en-GB') : 'Dataset Start'}</span>
+            <span>{datasetBounds.end ? new Date(datasetBounds.end).toLocaleDateString('en-GB') : 'Dataset End'}</span>
+          </div>
+        </div>
+      </div>
 
       {/* KPIs */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
@@ -96,7 +247,7 @@ const Dashboard = () => {
         {/* Main Chart */}
         <div className="lg:col-span-2 glass-panel p-6 rounded-2xl">
           <div className="flex justify-between items-center mb-6">
-            <h2 className="text-lg font-semibold text-white">Consumption Trend (Last 24h)</h2>
+            <h2 className="text-lg font-semibold text-white">Consumption Trend (Last 24h up to simulation time)</h2>
           </div>
           <div className="h-72 w-full">
             <ResponsiveContainer width="100%" height="100%">
@@ -161,11 +312,10 @@ const Dashboard = () => {
           <Lightbulb size={24} />
         </div>
         <div>
-          <h4 className="text-white font-semibold mb-1">Enerza Live Insight</h4>
+          <h4 className="text-white font-semibold mb-1">Enerza Live Replay Insight</h4>
           <p className="text-slate-300 text-sm leading-relaxed">
-            Based on recent monitoring, <strong>{data.appliance_distribution[0]?.name}</strong> contributed the largest share of consumption. 
-            There are {data.potential_savings > 0 ? "potential savings" : "no major waste events"} identified today. 
-            Check the Alerts and Simulator tabs to explore optimization opportunities.
+            At simulation timestamp <strong>{formatSimTime(currentSimTime || data.simulation_time)}</strong>, <strong>{data.appliance_distribution[0]?.name || 'Appliance'}</strong> contributed the largest share of consumption. 
+            There are {data.potential_savings > 0 ? "potential savings" : "no major waste events"} identified up to this point in the replay.
           </p>
         </div>
       </div>
@@ -175,3 +325,4 @@ const Dashboard = () => {
 };
 
 export default Dashboard;
+

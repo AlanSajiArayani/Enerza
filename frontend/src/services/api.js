@@ -9,8 +9,11 @@ const api = axios.create({
   },
 });
 
-export const getDashboardSummary = async () => {
-  const response = await api.get('/dashboard/');
+export const getDashboardSummary = async (simulationTime = null) => {
+  const url = simulationTime 
+    ? `/dashboard/?simulation_time=${encodeURIComponent(simulationTime)}` 
+    : '/dashboard/';
+  const response = await api.get(url);
   return response.data;
 };
 
