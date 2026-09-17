@@ -5,7 +5,7 @@ from .models import UserProfile, REFITHousehold, UserAppliance
 class UserApplianceSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserAppliance
-        fields = ['id', 'name', 'appliance_type', 'rated_power_watts', 'power_category', 'icon_key', 'iot_enabled', 'iot_device_name', 'iot_status', 'created_at']
+        fields = ['id', 'name', 'appliance_type', 'rated_power_watts', 'power_category', 'icon_key', 'iot_enabled', 'iot_device_name', 'iot_status', 'power_state', 'auto_turn_off_enabled', 'usage_limit_watts', 'created_at']
         read_only_fields = ['id', 'created_at']
 
 class REFITHouseholdSerializer(serializers.ModelSerializer):

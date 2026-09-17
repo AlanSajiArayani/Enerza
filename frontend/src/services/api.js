@@ -70,6 +70,17 @@ export const getApplianceDetail = async (id) => {
   return response.data;
 };
 
+export const toggleAppliancePower = async (id, powerState = null) => {
+  const payload = powerState !== null ? { power_state: powerState } : {};
+  const response = await api.post(`/appliances/${id}/toggle-power/`, payload);
+  return response.data;
+};
+
+export const setApplianceLimit = async (id, limitData) => {
+  const response = await api.post(`/appliances/${id}/set-limit/`, limitData);
+  return response.data;
+};
+
 export const getUserAppliances = async () => {
   const response = await api.get('/user-appliances/');
   return response.data;
@@ -77,6 +88,11 @@ export const getUserAppliances = async () => {
 
 export const addUserAppliance = async (applianceData) => {
   const response = await api.post('/user-appliances/', applianceData);
+  return response.data;
+};
+
+export const updateUserAppliance = async (id, applianceData) => {
+  const response = await api.patch(`/user-appliances/${id}/`, applianceData);
   return response.data;
 };
 

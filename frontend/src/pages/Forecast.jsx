@@ -86,9 +86,12 @@ const Forecast = () => {
         <div>
           <p className="text-[10px] font-semibold tracking-widest uppercase mb-1.5" style={{ color: '#334155' }}>Forecast</p>
           <h1 className="text-2xl font-bold text-white tracking-tight">Consumption Forecast</h1>
-          <p className="text-[13px] mt-1" style={{ color: '#64748b' }}>AI-powered demand projection from historical patterns.</p>
+          <p className="text-[13px] mt-1" style={{ color: '#64748b' }}>AI-powered demand projection using XGBoost gradient boosted regression.</p>
         </div>
-        <span className="badge badge-cyan" style={{ alignSelf: 'flex-start', marginTop: '4px' }}>No future data leakage</span>
+        <div className="flex items-center gap-2" style={{ alignSelf: 'flex-start', marginTop: '4px' }}>
+          <span className="badge badge-indigo">XGBoost Regressor</span>
+          <span className="badge badge-cyan">No data leakage</span>
+        </div>
       </div>
 
       {/* Summary stats */}
@@ -138,7 +141,7 @@ const Forecast = () => {
         <div className="mt-4 pt-4 flex items-start gap-2" style={{ borderTop: '1px solid rgba(255,255,255,0.05)' }}>
           <TrendingUp size={13} style={{ color: '#475569', marginTop: 2 }} />
           <p className="text-[11px]" style={{ color: '#475569' }}>
-            Prediction based on historical usage patterns using Random Forest regression.
+            Prediction based on historical usage patterns using XGBoost gradient boosted regression.
             Accuracy may vary. No future data was used for training.
           </p>
         </div>

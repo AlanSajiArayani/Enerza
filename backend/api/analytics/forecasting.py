@@ -1,11 +1,17 @@
 import pandas as pd
 import numpy as np
-from sklearn.ensemble import RandomForestRegressor
 from datetime import timedelta
+
+try:
+    from xgboost import XGBRegressor
+    HAS_XGBOOST = True
+except ImportError:
+    HAS_XGBOOST = False
+    from sklearn.ensemble import RandomForestRegressor
 
 def forecast_consumption(df_hourly):
     """
-    Uses Random Forest to predict Aggregate consumption for the next 7 days.
+    Uses XGBoost Regressor to predict Aggregate consumption for the next 7 days.
     """
     df = df_hourly[['Aggregate', 'hour', 'day_of_week', 'is_weekend']].copy()
     
@@ -24,7 +30,19 @@ def forecast_consumption(df_hourly):
     X = df[['hour', 'day_of_week', 'is_weekend', 'lag_1h', 'lag_24h', 'lag_1w', 'rolling_24h_mean']]
     y = df['Aggregate']
     
-    model = RandomForestRegressor(n_estimators=50, max_depth=10, random_state=42)
+    if HAS_XGBOOST:
+        model = XGBRegressor(
+            n_estimators=100,
+            max_depth=6,
+            learning_rate=0.08,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            random_state=42,
+            n_jobs=-1,
+            verbosity=0
+        )
+    else:
+        model = RandomForestRegressor(n_estimators=50, max_depth=10, random_state=42)
     model.fit(X, y)
     
     # Predict next 7 days (168 hours)

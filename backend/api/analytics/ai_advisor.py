@@ -8,7 +8,7 @@ def get_ai_advice(facts, user_question=None):
     If no API key is present, falls back to a dummy response.
     """
     prompt = f"""
-    You are WattWise AI, an expert household energy advisor.
+    You are Enerza AI, an expert household energy advisor.
     The user's home has the following energy profile:
     {json.dumps(facts, indent=2)}
     """
@@ -24,7 +24,7 @@ def get_ai_advice(facts, user_question=None):
 
     if gemini_key:
         try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_key}"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key={gemini_key}"
             payload = {
                 "contents": [{"parts": [{"text": prompt}]}]
             }
@@ -42,7 +42,7 @@ def get_ai_advice(facts, user_question=None):
             payload = {
                 "model": "gpt-4o-mini",
                 "messages": [
-                    {"role": "system", "content": "You are WattWise AI, an expert energy advisor."},
+                    {"role": "system", "content": "You are Enerza AI, an expert energy advisor."},
                     {"role": "user", "content": prompt}
                 ]
             }

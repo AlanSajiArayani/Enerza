@@ -6,9 +6,9 @@ import {
 } from 'recharts';
 import {
   ArrowLeft, Zap, IndianRupee, Activity, Sparkles, AlertTriangle,
-  Flame, CheckCircle2, Clock, Calendar, ShieldCheck
+  Flame, CheckCircle2, Clock, Calendar, ShieldCheck, Power, ShieldAlert, Sliders
 } from 'lucide-react';
-import { getApplianceDetail } from '../services/api';
+import { getApplianceDetail, toggleAppliancePower, setApplianceLimit } from '../services/api';
 
 /* ─── Skeleton ─── */
 const Skeleton = ({ className = '' }) => (
@@ -38,12 +38,15 @@ const ApplianceDetail = () => {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [limitWattsInput, setLimitWattsInput] = useState('');
+  const [savingLimit, setSavingLimit] = useState(false);
 
-  useEffect(() => {
+  const loadData = () => {
     setLoading(true);
     getApplianceDetail(id)
       .then(res => {
         setData(res);
+        setLimitWattsInput(res.usage_limit_watts ?? 2000);
         setLoading(false);
         setError(false);
       })
@@ -52,7 +55,37 @@ const ApplianceDetail = () => {
         setError(true);
         setLoading(false);
       });
+  };
+
+  useEffect(() => {
+    loadData();
   }, [id]);
+
+  const handleTogglePower = () => {
+    if (!data) return;
+    toggleAppliancePower(id, !data.power_state)
+      .then(() => loadData())
+      .catch(console.error);
+  };
+
+  const handleSaveLimit = (enableAutoOff = null) => {
+    if (!data) return;
+    setSavingLimit(true);
+    const watts = parseFloat(limitWattsInput) || 2000;
+    const autoOff = enableAutoOff !== null ? enableAutoOff : data.auto_turn_off_enabled;
+    setApplianceLimit(id, {
+      usage_limit_watts: watts,
+      auto_turn_off_enabled: autoOff
+    })
+      .then(() => {
+        setSavingLimit(false);
+        loadData();
+      })
+      .catch(err => {
+        console.error(err);
+        setSavingLimit(false);
+      });
+  };
 
   if (loading && !data) {
     return (
@@ -120,17 +153,93 @@ const ApplianceDetail = () => {
             </div>
             <h1 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2.5">
               {data.name}
-              <span className={`badge ${isElevated ? 'badge-amber' : 'badge-green'}`}>
+              <span className={`badge ${isElevated ? (data.status.includes('OFF') ? 'badge-red' : 'badge-amber') : 'badge-green'}`}>
                 {data.status}
               </span>
             </h1>
           </div>
         </div>
 
-        <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs font-semibold self-start sm:self-auto"
-          style={{ background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.18)', color: '#60a5fa' }}>
-          <Zap size={14} />
-          {data.household_share_pct}% Household Energy Share
+        <div className="flex items-center gap-3 self-start sm:self-auto">
+          {/* IoT Power Switch Toggle */}
+          <button
+            onClick={handleTogglePower}
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-lg ${
+              data.power_state
+                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-500/30 shadow-emerald-500/10'
+                : 'bg-red-500/20 text-red-300 border border-red-500/40 hover:bg-red-500/30 shadow-red-500/10'
+            }`}
+          >
+            <Power size={14} />
+            IoT Switch: {data.power_state ? 'ON' : 'OFF'}
+          </button>
+
+          <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs font-semibold"
+            style={{ background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.18)', color: '#60a5fa' }}>
+            <Zap size={14} />
+            {data.household_share_pct}% Share
+          </div>
+        </div>
+      </div>
+
+      {/* ── Auto Turn-Off Protection Control Banner ── */}
+      <div className="premium-card p-4 flex flex-col md:flex-row md:items-center justify-between gap-4"
+        style={{ background: 'linear-gradient(135deg, rgba(30,58,138,0.2) 0%, rgba(15,23,42,0.6) 100%)', border: '1px solid rgba(59,130,246,0.2)' }}>
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center bg-amber-500/10 border border-amber-500/20 text-amber-400 flex-shrink-0">
+            <ShieldAlert size={20} />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-semibold text-white">Auto Turn-Off Limit Control</h3>
+              <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${
+                data.auto_turn_off_enabled
+                  ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                  : 'bg-slate-800 text-slate-500 border border-slate-700'
+              }`}>
+                {data.auto_turn_off_enabled ? 'Active Protection' : 'Disabled'}
+              </span>
+            </div>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Automatically trips power state to OFF when current draw exceeds your threshold.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3 self-end md:self-auto">
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-slate-400 font-medium">Limit:</label>
+            <div className="relative">
+              <input
+                type="number"
+                step="100"
+                value={limitWattsInput}
+                onChange={e => setLimitWattsInput(e.target.value)}
+                placeholder="2000"
+                className="w-28 px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-white text-xs font-semibold focus:outline-none focus:border-amber-500 pr-7"
+              />
+              <span className="absolute right-2.5 top-1.5 text-xs text-slate-500 font-bold">W</span>
+            </div>
+          </div>
+
+          <button
+            onClick={() => handleSaveLimit(true)}
+            disabled={savingLimit}
+            className="px-3.5 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 text-xs font-semibold border border-amber-500/30 transition-all"
+          >
+            Set Limit
+          </button>
+
+          <button
+            onClick={() => handleSaveLimit(!data.auto_turn_off_enabled)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
+              data.auto_turn_off_enabled
+                ? 'bg-red-500/10 hover:bg-red-500/20 text-red-400 border-red-500/30'
+                : 'bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+            }`}
+          >
+            {data.auto_turn_off_enabled ? 'Disable Auto-Off' : 'Enable Auto-Off'}
+          </button>
         </div>
       </div>
 
