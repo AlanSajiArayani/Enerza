@@ -40,6 +40,8 @@ def dashboard_summary(request):
     if simulation_param:
         try:
             sim_dt = pd.to_datetime(simulation_param)
+            if hasattr(sim_dt, 'tzinfo') and sim_dt.tzinfo is not None:
+                sim_dt = sim_dt.tz_localize(None)
         except Exception:
             sim_dt = dataset_end - pd.Timedelta(days=7)
     else:

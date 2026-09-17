@@ -104,7 +104,7 @@ const Dashboard = () => {
       setData(res);
       setLoading(false);
       setError(false);
-      if (res.simulation_time && !currentSimTime) {
+      if (res.simulation_time) {
         setCurrentSimTime(res.simulation_time);
       }
       if (res.dataset_start && res.dataset_end) {
@@ -124,28 +124,37 @@ const Dashboard = () => {
   }, []);
 
   useEffect(() => {
-    if (!isPlaying || !currentSimTime) return;
+    if (!isPlaying) return;
 
     const interval = setInterval(() => {
       setCurrentSimTime(prevTime => {
-        if (!prevTime) return prevTime;
+        if (!prevTime || !datasetBounds.end) return prevTime;
         const prevMs = new Date(prevTime).getTime();
-        const nextMs = prevMs + speed * 10000;
-        const endMs = datasetBounds.end ? new Date(datasetBounds.end).getTime() : Infinity;
+        // Dynamic step based on speed multiplier
+        const stepHours = speed <= 1 ? 0.25 : speed <= 10 ? 0.5 : speed <= 60 ? 2 : 6;
+        const nextMs = prevMs + stepHours * 3600 * 1000;
+        const endMs = new Date(datasetBounds.end).getTime();
         
         if (nextMs >= endMs) {
           setIsPlaying(false);
           return datasetBounds.end;
         }
         
-        const nextIso = new Date(nextMs).toISOString();
-        fetchDashboard(nextIso);
-        return nextIso;
+        return new Date(nextMs).toISOString();
       });
-    }, 2500);
+    }, 1500);
 
     return () => clearInterval(interval);
-  }, [isPlaying, speed, currentSimTime, datasetBounds]);
+  }, [isPlaying, speed, datasetBounds]);
+
+  // Fetch updated data whenever simulation time changes
+  useEffect(() => {
+    if (currentSimTime && !loading) {
+      getDashboardSummary(currentSimTime).then(res => {
+        setData(res);
+      }).catch(console.error);
+    }
+  }, [currentSimTime]);
 
   const handleSliderChange = (e) => {
     if (!datasetBounds.start || !datasetBounds.end) return;
@@ -155,7 +164,6 @@ const Dashboard = () => {
     const selectedMs = startMs + pct * (endMs - startMs);
     const selectedIso = new Date(selectedMs).toISOString();
     setCurrentSimTime(selectedIso);
-    fetchDashboard(selectedIso);
   };
 
   const getSliderValue = () => {

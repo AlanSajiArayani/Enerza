@@ -53,16 +53,17 @@ def download_refit(house_number=1):
         return generate_synthetic_data(house_number)
 
 def generate_synthetic_data(house_number=1):
-    """Generates 30 days of data at 8-second intervals mimicking REFIT House N."""
+    """Generates 30 days of historical data in 2013-2015 REFIT dataset timeline."""
     filename = f"CLEAN_House{house_number}.csv"
     csv_path = os.path.join(os.path.dirname(__file__), filename)
-    print(f"Generating synthetic REFIT data for House {house_number} (30 days at 8s intervals)...")
+    print(f"Generating synthetic REFIT data for House {house_number} in 2013-2015 historical timeline...")
     
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=30)
+    # Authentic REFIT dataset period: October 2013 onwards
+    start_date = datetime(2013, 10, 1, 0, 0, 0)
+    end_date = start_date + timedelta(days=30)
     
-    # 8 second intervals
-    date_rng = pd.date_range(start=start_date, end=end_date, freq='8s')
+    # 1-minute resample for fast pre-generation
+    date_rng = pd.date_range(start=start_date, end=end_date, freq='1min')
     
     df = pd.DataFrame(date_rng, columns=['Time'])
     df['Unix'] = df['Time'].astype('int64') // 10**9
@@ -76,39 +77,43 @@ def generate_synthetic_data(house_number=1):
     df['Appliance1'] = np.where(df['Unix'] % 3600 < (1200 + house_number * 30), np.random.normal(base_fridge_power, 5, len(df)), 0)
     
     # Washing Machine (few times a week, big spikes)
+    # Washing Machine
     df['Appliance2'] = 0.0
     wm_events = df.sample(n=12 + (house_number % 8)).index
     for idx in wm_events:
-        end_idx = min(idx + 450, len(df))
-        df.loc[idx:end_idx, 'Appliance2'] = np.random.normal(1800 + house_number * 50, 100, end_idx - idx + 1)
+        end_idx = min(idx + 450, len(df) - 1)
+        slice_len = len(df.loc[idx:end_idx])
+        df.loc[idx:end_idx, 'Appliance2'] = np.random.normal(1800 + house_number * 50, 100, slice_len)
         
     # TV (evenings)
     is_evening = (df['Time'].dt.hour >= 18) & (df['Time'].dt.hour <= 23)
     df['Appliance3'] = np.where(is_evening, np.random.normal(120 + house_number * 10, 10, len(df)), 0.0)
     
-    # Microwave (short spikes at meal times)
+    # Microwave
     df['Appliance4'] = 0.0
     is_meal = df['Time'].dt.hour.isin([8, 13, 19])
     mw_events = df[is_meal].sample(frac=0.01).index
     for idx in mw_events:
-        end_idx = min(idx + 15, len(df))
-        df.loc[idx:end_idx, 'Appliance4'] = np.random.normal(1100 + house_number * 30, 50, end_idx - idx + 1)
+        end_idx = min(idx + 15, len(df) - 1)
+        slice_len = len(df.loc[idx:end_idx])
+        df.loc[idx:end_idx, 'Appliance4'] = np.random.normal(1100 + house_number * 30, 50, slice_len)
         
     # Dishwasher
     df['Appliance5'] = 0.0
     dw_events = df.sample(n=8 + (house_number % 6)).index
     for idx in dw_events:
-        end_idx = min(idx + 600, len(df))
-        df.loc[idx:end_idx, 'Appliance5'] = np.random.normal(1400 + house_number * 40, 100, end_idx - idx + 1)
+        end_idx = min(idx + 600, len(df) - 1)
+        slice_len = len(df.loc[idx:end_idx])
+        df.loc[idx:end_idx, 'Appliance5'] = np.random.normal(1400 + house_number * 40, 100, slice_len)
         
     for i in range(6, 10):
-        # Add random active periods for other appliances
         df[f'Appliance{i}'] = 0.0
         if i % 2 == house_number % 2:
             events = df.sample(n=5).index
             for idx in events:
-                end_idx = min(idx + 100, len(df))
-                df.loc[idx:end_idx, f'Appliance{i}'] = np.random.normal(300 + i * 50, 30, end_idx - idx + 1)
+                end_idx = min(idx + 100, len(df) - 1)
+                slice_len = len(df.loc[idx:end_idx])
+                df.loc[idx:end_idx, f'Appliance{i}'] = np.random.normal(300 + i * 50, 30, slice_len)
         
     # Aggregate is sum of appliances + base load
     df['Aggregate'] = (
