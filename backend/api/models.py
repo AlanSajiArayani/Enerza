@@ -33,3 +33,35 @@ def create_or_update_user_profile(sender, instance, created, **kwargs):
             if (instance.is_staff or instance.is_superuser) and instance.profile.role != 'admin':
                 instance.profile.role = 'admin'
                 instance.profile.save()
+
+class UserAppliance(models.Model):
+    POWER_CATEGORY_CHOICES = (
+        ('low', 'Low Power'),
+        ('moderate', 'Moderate Power'),
+        ('high', 'High Power'),
+    )
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='appliances')
+    name = models.CharField(max_length=100)
+    appliance_type = models.CharField(max_length=100)
+    rated_power_watts = models.FloatField(default=100.0)
+    power_category = models.CharField(max_length=20, choices=POWER_CATEGORY_CHOICES, default='low')
+    icon_key = models.CharField(max_length=50, default='zap')
+    iot_enabled = models.BooleanField(default=False)
+    iot_device_name = models.CharField(max_length=100, blank=True, null=True)
+    iot_status = models.CharField(max_length=50, default='Not Connected')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def save(self, *args, **kwargs):
+        if self.rated_power_watts < 300:
+            self.power_category = 'low'
+        elif self.rated_power_watts <= 1000:
+            self.power_category = 'moderate'
+        else:
+            self.power_category = 'high'
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.name} ({self.user.username})"
+
