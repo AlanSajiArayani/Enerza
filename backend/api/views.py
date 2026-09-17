@@ -87,13 +87,15 @@ def dashboard_summary(request):
     # Efficiency score
     score = 100 - min(100, max(0, pct_change) + 5)
     
-    # Appliance Distribution for pie chart
-    app_cols = [c for c in df_daily.columns if c.startswith('Appliance') and not c.endswith('_cost')]
+    # Appliance Distribution for pie chart and Top Consumers ranking up to sim_dt
+    app_cols = [c for c in df_hourly.columns if c.startswith('Appliance') and not c.endswith('_cost')]
     app_distribution = []
-    slice_30d = df_daily_hist[df_daily_hist.index >= (sim_today_start - pd.Timedelta(days=30))]
-    
+    slice_window = df_hourly_hist[df_hourly_hist.index >= (sim_dt - pd.Timedelta(days=7))]
+    if len(slice_window) == 0:
+        slice_window = df_hourly_hist.tail(24)
+
     for app in app_cols:
-        consumption = float(slice_30d[app].sum()) if len(slice_30d) > 0 else float(df_daily_hist.tail(30)[app].sum())
+        consumption = float(slice_window[app].sum())
         if consumption > 0:
             app_distribution.append({
                 'id': app,
@@ -101,7 +103,7 @@ def dashboard_summary(request):
                 'value': round(consumption, 2)
             })
             
-    # Sort for top consumers
+    # Sort for top consumers in real time up to sim_dt
     app_distribution = sorted(app_distribution, key=lambda x: x['value'], reverse=True)
     
     # Hourly consumption for the last 24h up to sim_dt
