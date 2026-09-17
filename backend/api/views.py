@@ -1,12 +1,20 @@
 import pandas as pd
-from rest_framework.decorators import api_view
+from django.contrib.auth.models import User
+from django.contrib.auth import authenticate
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated, IsAdminUser, AllowAny
 from rest_framework.response import Response
-from .analytics.preprocessing import load_and_preprocess, get_appliance_mapping
+from rest_framework import status
+from rest_framework_simplejwt.tokens import RefreshToken
 
+from .analytics.preprocessing import load_and_preprocess, get_appliance_mapping
 from .analytics.anomaly_detection import detect_anomalies
 from .analytics.forecasting import forecast_consumption
 from .analytics.waste_detection import detect_waste
 from .analytics.ai_advisor import get_ai_advice
+from .models import UserProfile
+from .serializers import UserSerializer, UserProfileSerializer, RegisterSerializer
+
 
 @api_view(['GET'])
 def dashboard_summary(request):
@@ -231,3 +239,122 @@ def ai_advisor(request):
         return Response({'response': advice})
     except Exception as e:
         return Response({'error': str(e)}, status=500)
+
+# Authentication & User Profile Views
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def register_view(request):
+    serializer = RegisterSerializer(data=request.data)
+    if serializer.is_valid():
+        user = serializer.save()
+        refresh = RefreshToken.for_user(user)
+        return Response({
+            'access': str(refresh.access_token),
+            'refresh': str(refresh),
+            'user': UserSerializer(user).data
+        }, status=status.HTTP_201_CREATED)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def login_view(request):
+    username = request.data.get('username')
+    password = request.data.get('password')
+    
+    if not username or not password:
+        return Response({'error': 'Username and password are required.'}, status=status.HTTP_400_BAD_REQUEST)
+        
+    user = authenticate(username=username, password=password)
+    
+    if user is None:
+        return Response({'error': 'Invalid username or password.'}, status=status.HTTP_401_UNAUTHORIZED)
+        
+    if not user.is_active:
+        return Response({'error': 'User account is disabled.'}, status=status.HTTP_403_FORBIDDEN)
+        
+    UserProfile.objects.get_or_create(
+        user=user,
+        defaults={'role': 'admin' if (user.is_staff or user.is_superuser) else 'citizen'}
+    )
+    
+    refresh = RefreshToken.for_user(user)
+    return Response({
+        'access': str(refresh.access_token),
+        'refresh': str(refresh),
+        'user': UserSerializer(user).data
+    })
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def current_user_view(request):
+    UserProfile.objects.get_or_create(
+        user=request.user,
+        defaults={'role': 'admin' if (request.user.is_staff or request.user.is_superuser) else 'citizen'}
+    )
+    return Response(UserSerializer(request.user).data)
+
+@api_view(['GET', 'PATCH'])
+@permission_classes([IsAuthenticated])
+def profile_view(request):
+    profile, _ = UserProfile.objects.get_or_create(
+        user=request.user,
+        defaults={'role': 'admin' if (request.user.is_staff or request.user.is_superuser) else 'citizen'}
+    )
+    
+    if request.method == 'GET':
+        return Response(UserProfileSerializer(profile).data)
+        
+    elif request.method == 'PATCH':
+        user = request.user
+        if 'first_name' in request.data:
+            user.first_name = request.data['first_name']
+        if 'last_name' in request.data:
+            user.last_name = request.data['last_name']
+        if 'email' in request.data:
+            user.email = request.data['email']
+        user.save()
+        
+        profile_data = request.data.copy()
+        if 'role' in profile_data:
+            profile_data.pop('role')
+            
+        serializer = UserProfileSerializer(profile, data=profile_data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(UserSerializer(user).data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+@api_view(['GET'])
+@permission_classes([IsAdminUser])
+def admin_users_view(request):
+    users = User.objects.all().order_by('-date_joined')
+    for u in users:
+        UserProfile.objects.get_or_create(
+            user=u,
+            defaults={'role': 'admin' if (u.is_staff or u.is_superuser) else 'citizen'}
+        )
+    return Response(UserSerializer(users, many=True).data)
+
+@api_view(['PATCH'])
+@permission_classes([IsAdminUser])
+def admin_user_detail_view(request, user_id):
+    try:
+        user = User.objects.get(pk=user_id)
+    except User.DoesNotExist:
+        return Response({'error': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+        
+    if 'is_active' in request.data:
+        user.is_active = bool(request.data['is_active'])
+        user.save()
+        
+    if 'role' in request.data and hasattr(user, 'profile'):
+        new_role = request.data['role']
+        if new_role in ['citizen', 'admin']:
+            user.profile.role = new_role
+            user.profile.save()
+            user.is_staff = (new_role == 'admin')
+            user.save()
+            
+    return Response(UserSerializer(user).data)
+
