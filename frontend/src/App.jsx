@@ -16,6 +16,7 @@ import Login from './pages/Login';
 import Register from './pages/Register';
 import Profile from './pages/Profile';
 import AdminUsers from './pages/AdminUsers';
+import Insights from './pages/Insights';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import ProtectedRoute from './components/ProtectedRoute';
 
@@ -175,15 +176,7 @@ function App() {
             <Route path="/" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
             <Route path="/appliances" element={<ProtectedRoute><Appliances /></ProtectedRoute>} />
             <Route path="/appliances/:id" element={<ProtectedRoute><ApplianceDetail /></ProtectedRoute>} />
-            <Route path="/insights" element={
-              <ProtectedRoute>
-                <div className="page-enter glass-panel rounded-2xl p-16 text-center">
-                  <Activity size={48} className="text-slate-600 mx-auto mb-4" />
-                  <h2 className="text-xl font-semibold text-white mb-2">Energy Insights</h2>
-                  <p className="text-slate-500 text-sm">Deep-dive analysis coming in the next release.</p>
-                </div>
-              </ProtectedRoute>
-            } />
+            <Route path="/insights" element={<ProtectedRoute><Insights /></ProtectedRoute>} />
             <Route path="/forecast" element={<ProtectedRoute><Forecast /></ProtectedRoute>} />
             <Route path="/alerts" element={<ProtectedRoute><Alerts /></ProtectedRoute>} />
             <Route path="/simulator" element={<ProtectedRoute><Simulator /></ProtectedRoute>} />
