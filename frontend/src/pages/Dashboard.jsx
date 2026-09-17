@@ -3,7 +3,7 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, PieChart, Pie, Cell
 } from 'recharts';
-import { Zap, TrendingDown, TrendingUp, IndianRupee, Activity, Lightbulb, Sparkles } from 'lucide-react';
+import { Zap, TrendingDown, TrendingUp, IndianRupee, Activity, Lightbulb, Sparkles, Play, Pause, RotateCcw, Clock } from 'lucide-react';
 import { getDashboardSummary } from '../services/api';
 
 /* ─── Constants ─── */
@@ -80,20 +80,101 @@ const ChartTooltip = ({ active, payload, label }) => {
   );
 };
 
+const formatSimTime = (isoString) => {
+  if (!isoString) return 'Loading simulation...';
+  const d = new Date(isoString);
+  if (isNaN(d.getTime())) return isoString;
+  const dateStr = d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+  const timeStr = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  return `${dateStr} • ${timeStr}`;
+};
+
 /* ─── Dashboard ─── */
 const Dashboard = () => {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [currentSimTime, setCurrentSimTime] = useState(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [speed, setSpeed] = useState(60);
+  const [datasetBounds, setDatasetBounds] = useState({ start: null, end: null });
+
+  const fetchDashboard = (simTime) => {
+    getDashboardSummary(simTime).then(res => {
+      setData(res);
+      setLoading(false);
+      setError(false);
+      if (res.simulation_time && !currentSimTime) {
+        setCurrentSimTime(res.simulation_time);
+      }
+      if (res.dataset_start && res.dataset_end) {
+        setDatasetBounds({ start: res.dataset_start, end: res.dataset_end });
+      }
+    }).catch(err => {
+      console.error(err);
+      setError(true);
+      setLoading(false);
+    });
+  };
 
   useEffect(() => {
-    getDashboardSummary()
-      .then(res => { setData(res); setLoading(false); })
-      .catch(() => { setError(true); setLoading(false); });
+    fetchDashboard(null);
   }, []);
 
+  useEffect(() => {
+    if (!isPlaying || !currentSimTime) return;
+
+    const interval = setInterval(() => {
+      setCurrentSimTime(prevTime => {
+        if (!prevTime) return prevTime;
+        const prevMs = new Date(prevTime).getTime();
+        const nextMs = prevMs + speed * 10000;
+        const endMs = datasetBounds.end ? new Date(datasetBounds.end).getTime() : Infinity;
+        
+        if (nextMs >= endMs) {
+          setIsPlaying(false);
+          return datasetBounds.end;
+        }
+        
+        const nextIso = new Date(nextMs).toISOString();
+        fetchDashboard(nextIso);
+        return nextIso;
+      });
+    }, 2500);
+
+    return () => clearInterval(interval);
+  }, [isPlaying, speed, currentSimTime, datasetBounds]);
+
+  const handleSliderChange = (e) => {
+    if (!datasetBounds.start || !datasetBounds.end) return;
+    const startMs = new Date(datasetBounds.start).getTime();
+    const endMs = new Date(datasetBounds.end).getTime();
+    const pct = Number(e.target.value) / 100;
+    const selectedMs = startMs + pct * (endMs - startMs);
+    const selectedIso = new Date(selectedMs).toISOString();
+    setCurrentSimTime(selectedIso);
+    fetchDashboard(selectedIso);
+  };
+
+  const getSliderValue = () => {
+    if (!currentSimTime || !datasetBounds.start || !datasetBounds.end) return 50;
+    const startMs = new Date(datasetBounds.start).getTime();
+    const endMs = new Date(datasetBounds.end).getTime();
+    const curMs = new Date(currentSimTime).getTime();
+    if (endMs <= startMs) return 50;
+    return Math.min(100, Math.max(0, ((curMs - startMs) / (endMs - startMs)) * 100));
+  };
+
+  const handleReset = () => {
+    setIsPlaying(false);
+    if (datasetBounds.start) {
+      setCurrentSimTime(datasetBounds.start);
+      fetchDashboard(datasetBounds.start);
+    }
+  };
+
   /* Loading */
-  if (loading) {
+  if (loading && !data) {
     return (
       <div className="space-y-6 pb-12">
         <div className="flex items-center gap-3 mb-8">
@@ -112,7 +193,7 @@ const Dashboard = () => {
   }
 
   /* Error */
-  if (error || !data) {
+  if (error && !data) {
     return (
       <div className="page-enter glass-panel rounded-2xl p-12 text-center flex flex-col items-center gap-4">
         <div className="w-12 h-12 rounded-2xl flex items-center justify-center" style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)' }}>
@@ -122,7 +203,7 @@ const Dashboard = () => {
           <h2 className="text-lg font-semibold text-white mb-1">Unable to load energy data</h2>
           <p className="text-sm" style={{ color: '#64748b' }}>Check that the backend is running on port 8000.</p>
         </div>
-        <button onClick={() => { setError(false); setLoading(true); getDashboardSummary().then(r => { setData(r); setLoading(false); }).catch(() => { setError(true); setLoading(false); }); }}
+        <button onClick={() => { setError(false); setLoading(true); fetchDashboard(currentSimTime); }}
           className="px-5 py-2 rounded-lg text-sm font-medium text-white transition-all"
           style={{ background: '#1e3a5f', border: '1px solid rgba(59,130,246,0.3)' }}>
           Retry
@@ -143,12 +224,97 @@ const Dashboard = () => {
         <div>
           <p className="text-[10px] font-semibold tracking-widest uppercase mb-1.5" style={{ color: '#334155' }}>Overview</p>
           <h1 className="text-2xl font-bold text-white tracking-tight">Energy Intelligence</h1>
-          <p className="text-[13px] mt-1" style={{ color: '#64748b' }}>Household consumption at a glance · REFIT historical data</p>
+          <p className="text-[13px] mt-1" style={{ color: '#64748b' }}>Replaying historical REFIT smart-meter measurements.</p>
         </div>
         <div className="flex items-center gap-2 px-3 py-1.5 rounded-full text-[11px] font-semibold tracking-wide"
           style={{ background: 'rgba(6,182,212,0.08)', border: '1px solid rgba(6,182,212,0.18)', color: '#22d3ee' }}>
           <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 pulse-dot" />
-          {data.status}
+          {data.data_source || data.status}
+        </div>
+      </div>
+
+      {/* Replay Control Bar */}
+      <div className="premium-card p-5 space-y-4">
+        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+          <div className="flex items-center space-x-3">
+            <div className="p-2.5 bg-blue-500/10 text-blue-400 rounded-xl border border-blue-500/20">
+              <Clock size={22} />
+            </div>
+            <div>
+              <div className="flex items-center space-x-2 mb-1">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-blue-400">Historical Replay</span>
+                <span className="text-slate-500 text-[10px]">•</span>
+                <span className="text-[10px] text-slate-400">REFIT House 1</span>
+              </div>
+              <div className="text-lg font-bold text-white tracking-tight mt-0.5">
+                {formatSimTime(currentSimTime || data.simulation_time)}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center space-x-3 w-full md:w-auto justify-end">
+            <button 
+              onClick={() => setIsPlaying(!isPlaying)}
+              className={`flex items-center space-x-2 px-5 py-2.5 rounded-xl font-medium text-sm transition-all ${
+                isPlaying 
+                  ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20 hover:bg-amber-500/20' 
+                  : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/20'
+              }`}
+            >
+              {isPlaying ? <Pause size={16} /> : <Play size={16} />}
+              <span>{isPlaying ? 'Pause' : 'Play'}</span>
+            </button>
+
+            <div className="flex items-center space-x-1 rounded-xl p-1" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
+              {[1, 10, 60, 300].map(s => (
+                <button
+                  key={s}
+                  onClick={() => setSpeed(s)}
+                  className={`px-3 py-1.5 text-[11px] font-semibold rounded-lg transition-all ${
+                    speed === s 
+                      ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' 
+                      : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                  }`}
+                  style={speed !== s ? { border: '1px solid transparent' } : {}}
+                >
+                  {s}x
+                </button>
+              ))}
+            </div>
+
+            <button 
+              onClick={handleReset}
+              className="p-2.5 rounded-xl text-slate-400 hover:text-white transition-colors"
+              style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}
+              title="Reset Replay Timeline"
+            >
+              <RotateCcw size={16} />
+            </button>
+          </div>
+        </div>
+
+        {/* Timeline Slider */}
+        <div className="pt-2 relative py-1">
+           <div className="absolute inset-0 flex items-center pointer-events-none px-0">
+             <div className="w-full h-1 rounded-full" style={{ background: 'rgba(255,255,255,0.06)' }}>
+               <div className="h-1 rounded-full transition-all" style={{ width: `${getSliderValue()}%`, background: 'linear-gradient(90deg,#3b82f6,#60a5fa)' }} />
+             </div>
+             <div className="absolute h-3 w-3 rounded-full border-2 border-blue-400 bg-slate-900 shadow-[0_0_10px_rgba(59,130,246,0.5)] transition-all"
+               style={{ left: `calc(${getSliderValue()}% - 6px)` }} />
+           </div>
+          <input 
+            type="range"
+            min="0"
+            max="100"
+            step="0.1"
+            value={getSliderValue()}
+            onChange={handleSliderChange}
+            className="relative z-10 w-full opacity-0 cursor-pointer"
+          />
+          <div className="flex justify-between text-[10px] text-slate-500 mt-2 font-medium">
+            <span>{datasetBounds.start ? new Date(datasetBounds.start).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : 'Dataset Start'}</span>
+            <span>{datasetBounds.end ? new Date(datasetBounds.end).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : 'Dataset End'}</span>
+          </div>
         </div>
       </div>
 
@@ -293,10 +459,10 @@ const Dashboard = () => {
             <span className="badge badge-cyan">Analysis Active</span>
           </div>
           <p className="text-[13px] leading-relaxed" style={{ color: '#94a3b8' }}>
-            <span className="text-white font-medium">{data.appliance_distribution[0]?.name}</span> is the dominant consumer in this period.{' '}
+            At simulation timestamp <strong>{formatSimTime(currentSimTime || data.simulation_time)}</strong>, <strong>{data.appliance_distribution[0]?.name || 'Appliance'}</strong> contributed the largest share of consumption.{' '}
             {data.potential_savings > 0
               ? <>Potential monthly savings of <span className="text-emerald-400 font-semibold">₹{data.potential_savings}</span> identified from detected waste events.</>
-              : 'No significant waste detected in this period.'}
+              : 'No significant waste detected up to this point.'}
             {' '}Navigate to <span className="text-blue-400 font-medium">Alerts</span> or <span className="text-blue-400 font-medium">What-If</span> to explore optimizations.
           </p>
         </div>
@@ -313,7 +479,7 @@ const Dashboard = () => {
             <p className="text-[10px] font-semibold tracking-widest uppercase mb-1" style={{ color: '#334155' }}>Rankings</p>
             <h2 className="text-[15px] font-semibold text-white">Top Energy Consumers</h2>
           </div>
-          <span className="badge badge-slate">Last 30 days</span>
+          <span className="badge badge-slate">Up to sim time</span>
         </div>
         <div className="space-y-3">
           {data.appliance_distribution.slice(0, 5).map((app, i) => {
