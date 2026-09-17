@@ -1,8 +1,9 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
-from .models import UserProfile
+from .models import UserProfile, UserAppliance
 
 class UserProfileSerializer(serializers.ModelSerializer):
+
     class Meta:
         model = UserProfile
         fields = [
@@ -55,3 +56,14 @@ class RegisterSerializer(serializers.ModelSerializer):
             is_superuser=False
         )
         return user
+
+class UserApplianceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = UserAppliance
+        fields = [
+            'id', 'name', 'appliance_type', 'rated_power_watts',
+            'power_category', 'icon_key', 'iot_enabled',
+            'iot_device_name', 'iot_status', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'power_category', 'created_at', 'updated_at']
+

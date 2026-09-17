@@ -12,8 +12,9 @@ from .analytics.anomaly_detection import detect_anomalies
 from .analytics.forecasting import forecast_consumption
 from .analytics.waste_detection import detect_waste
 from .analytics.ai_advisor import get_ai_advice
-from .models import UserProfile
-from .serializers import UserSerializer, UserProfileSerializer, RegisterSerializer
+from .models import UserProfile, UserAppliance
+from .serializers import UserSerializer, UserProfileSerializer, RegisterSerializer, UserApplianceSerializer
+
 
 
 @api_view(['GET'])
@@ -357,4 +358,72 @@ def admin_user_detail_view(request, user_id):
             user.save()
             
     return Response(UserSerializer(user).data)
+
+# User Appliance Management & Catalog
+
+APPLIANCE_CATALOG = [
+    {'type': 'Refrigerator', 'default_name': 'Kitchen Refrigerator', 'default_power': 150.0, 'icon_key': 'fridge'},
+    {'type': 'Washing Machine', 'default_name': 'Washing Machine', 'default_power': 500.0, 'icon_key': 'washing_machine'},
+    {'type': 'Television', 'default_name': 'Living Room TV', 'default_power': 120.0, 'icon_key': 'tv'},
+    {'type': 'Mixer / Mixie', 'default_name': 'Kitchen Mixer', 'default_power': 450.0, 'icon_key': 'blender'},
+    {'type': 'Microwave', 'default_name': 'Microwave Oven', 'default_power': 1200.0, 'icon_key': 'microwave'},
+    {'type': 'Dishwasher', 'default_name': 'Dishwasher', 'default_power': 1400.0, 'icon_key': 'dishwasher'},
+    {'type': 'Electric Kettle', 'default_name': 'Tea Kettle', 'default_power': 1800.0, 'icon_key': 'kettle'},
+    {'type': 'Toaster', 'default_name': 'Bread Toaster', 'default_power': 850.0, 'icon_key': 'toaster'},
+    {'type': 'Air Conditioner', 'default_name': 'Bedroom AC', 'default_power': 1500.0, 'icon_key': 'ac'},
+    {'type': 'Ceiling Fan', 'default_name': 'Ceiling Fan', 'default_power': 75.0, 'icon_key': 'fan'},
+    {'type': 'Water Heater / Geyser', 'default_name': 'Bathroom Geyser', 'default_power': 2000.0, 'icon_key': 'geyser'},
+    {'type': 'Room Heater', 'default_name': 'Room Heater', 'default_power': 1500.0, 'icon_key': 'heater'},
+    {'type': 'Iron', 'default_name': 'Clothes Iron', 'default_power': 1000.0, 'icon_key': 'iron'},
+    {'type': 'Laptop', 'default_name': 'Work Laptop', 'default_power': 65.0, 'icon_key': 'laptop'},
+    {'type': 'Desktop Computer', 'default_name': 'Desktop PC', 'default_power': 250.0, 'icon_key': 'desktop'},
+    {'type': 'Wi-Fi Router', 'default_name': 'Home Wi-Fi Router', 'default_power': 12.0, 'icon_key': 'wifi'},
+    {'type': 'Induction Cooktop', 'default_name': 'Induction Stove', 'default_power': 1800.0, 'icon_key': 'cooktop'},
+    {'type': 'Electric Oven', 'default_name': 'Baking Oven', 'default_power': 2000.0, 'icon_key': 'oven'},
+    {'type': 'LED Lighting', 'default_name': 'Hallway LED Light', 'default_power': 15.0, 'icon_key': 'bulb'},
+    {'type': 'Hair Dryer', 'default_name': 'Hair Dryer', 'default_power': 1200.0, 'icon_key': 'dryer'},
+    {'type': 'Water Pump', 'default_name': 'Main Water Pump', 'default_power': 750.0, 'icon_key': 'pump'},
+    {'type': 'Other / Custom Appliance', 'default_name': 'Custom Appliance', 'default_power': 100.0, 'icon_key': 'custom'},
+]
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def appliance_catalog_view(request):
+    return Response(APPLIANCE_CATALOG)
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def user_appliances_list_create_view(request):
+    if request.method == 'GET':
+        appliances = UserAppliance.objects.filter(user=request.user).order_by('-created_at')
+        return Response(UserApplianceSerializer(appliances, many=True).data)
+        
+    elif request.method == 'POST':
+        serializer = UserApplianceSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save(user=request.user)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+@api_view(['GET', 'PATCH', 'DELETE'])
+@permission_classes([IsAuthenticated])
+def user_appliance_detail_view(request, pk):
+    appliance = UserAppliance.objects.filter(pk=pk, user=request.user).first()
+    if not appliance:
+        return Response({'error': 'Appliance not found or access denied.'}, status=status.HTTP_404_NOT_FOUND)
+        
+    if request.method == 'GET':
+        return Response(UserApplianceSerializer(appliance).data)
+        
+    elif request.method == 'PATCH':
+        serializer = UserApplianceSerializer(appliance, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+    elif request.method == 'DELETE':
+        appliance.delete()
+        return Response({'status': 'Appliance deleted.'}, status=status.HTTP_204_NO_CONTENT)
+
 
