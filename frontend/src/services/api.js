@@ -65,6 +65,26 @@ export const getAppliances = async () => {
   return response.data;
 };
 
+export const getApplianceDetail = async (id) => {
+  const response = await api.get(`/appliances/${id}/`);
+  return response.data;
+};
+
+export const getUserAppliances = async () => {
+  const response = await api.get('/user-appliances/');
+  return response.data;
+};
+
+export const addUserAppliance = async (applianceData) => {
+  const response = await api.post('/user-appliances/', applianceData);
+  return response.data;
+};
+
+export const deleteUserAppliance = async (id) => {
+  const response = await api.delete(`/user-appliances/${id}/`);
+  return response.data;
+};
+
 export const getAlerts = async () => {
   const response = await api.get('/alerts/');
   return response.data;

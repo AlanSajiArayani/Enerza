@@ -181,6 +181,137 @@ def get_appliances(request):
         
     return Response(appliances)
 
+
+@api_view(['GET'])
+def get_appliance_detail(request, appliance_id):
+    house_number, refit_house = get_user_refit_household(request.user)
+    if house_number is None:
+        return Response({
+            'household_assigned': False,
+            'message': 'No REFIT household is assigned to this account.'
+        }, status=status.HTTP_200_OK)
+
+    try:
+        df_hourly, df_daily, df_minute = load_and_preprocess(house_number=house_number, include_minute=True)
+    except Exception as e:
+        return Response({'error': str(e)}, status=500)
+        
+    mapping = get_appliance_mapping(house_number=house_number)
+    tariff = request.user.profile.electricity_tariff if (request.user.is_authenticated and hasattr(request.user, 'profile')) else 8.0
+
+    target_col = None
+    if appliance_id in df_daily.columns:
+        target_col = appliance_id
+    else:
+        for k, v in mapping.items():
+            if k == appliance_id or v.lower() == appliance_id.lower():
+                target_col = k
+                break
+                
+    if not target_col or target_col not in df_daily.columns:
+        return Response({'error': f'Appliance {appliance_id} not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+    app_name = mapping.get(target_col, target_col)
+    
+    today_kwh = float(df_daily.iloc[-1][target_col])
+    today_cost = round(today_kwh * tariff, 2)
+    monthly_kwh = float(df_daily.tail(30)[target_col].sum())
+    monthly_cost = round(monthly_kwh * tariff, 2)
+    avg_daily_kwh = float(df_daily[target_col].mean())
+    
+    total_today_household = float(df_daily.iloc[-1]['Aggregate'])
+    household_share_pct = round((today_kwh / total_today_household * 100), 1) if total_today_household > 0 else 0.0
+
+    peak_power_watts = float(df_minute[target_col].max() * 60000.0) if target_col in df_minute.columns else float(df_hourly[target_col].max() * 1000.0)
+    status_val = "Elevated" if today_kwh > avg_daily_kwh * 1.5 else "Normal"
+
+    recent_24h = df_hourly.tail(24)
+    hourly_trend = []
+    for t, row in recent_24h.iterrows():
+        hourly_trend.append({
+            'time': f"{t.hour:02d}:00",
+            'kwh': round(row[target_col], 3)
+        })
+
+    recent_14d = df_daily.tail(14)
+    daily_trend = []
+    for t, row in recent_14d.iterrows():
+        daily_trend.append({
+            'date': t.strftime('%b %d'),
+            'kwh': round(row[target_col], 2)
+        })
+
+    waste_alerts = detect_waste(df_hourly)
+    anomaly_alerts = detect_anomalies(df_hourly)
+    device_alerts = []
+    for w in waste_alerts:
+        if w.get('appliance_id') == target_col:
+            w['appliance_name'] = app_name
+            w['type'] = 'waste'
+            device_alerts.append(w)
+    for a in anomaly_alerts:
+        if a.get('appliance_id') == target_col:
+            a['appliance_name'] = app_name
+            a['issue'] = 'Abnormal Consumption Spike'
+            a['type'] = 'anomaly'
+            device_alerts.append(a)
+
+    ai_advice = (
+        f"{app_name} accounts for {household_share_pct}% of total daily household energy intake. "
+        f"Average daily consumption over observation timeline is {round(avg_daily_kwh, 2)} kWh/day."
+    )
+    if status_val == "Elevated":
+        ai_advice += f" Today's reading of {round(today_kwh, 2)} kWh is higher than normal."
+
+    return Response({
+        'id': target_col,
+        'name': app_name,
+        'status': status_val,
+        'today_kwh': round(today_kwh, 2),
+        'today_cost': today_cost,
+        'monthly_kwh': round(monthly_kwh, 2),
+        'monthly_cost': monthly_cost,
+        'avg_daily_kwh': round(avg_daily_kwh, 2),
+        'peak_power_watts': round(peak_power_watts, 1),
+        'household_share_pct': household_share_pct,
+        'hourly_trend': hourly_trend,
+        'daily_trend': daily_trend,
+        'alerts': device_alerts,
+        'ai_advice': ai_advice,
+        'household': {
+            'house_number': house_number,
+            'display_name': refit_house.display_name
+        }
+    })
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def user_appliances_view(request):
+    from .models import UserAppliance
+    from .serializers import UserApplianceSerializer
+    if request.method == 'GET':
+        appliances = request.user.appliances.all().order_by('-created_at')
+        return Response(UserApplianceSerializer(appliances, many=True).data)
+    elif request.method == 'POST':
+        serializer = UserApplianceSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save(user=request.user)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def user_appliance_detail_view(request, pk):
+    from .models import UserAppliance
+    try:
+        appliance = request.user.appliances.get(pk=pk)
+    except UserAppliance.DoesNotExist:
+        return Response({'error': 'Saved appliance not found.'}, status=status.HTTP_404_NOT_FOUND)
+    appliance.delete()
+    return Response({'message': 'Appliance deleted successfully.'}, status=status.HTTP_200_OK)
+
 @api_view(['GET'])
 def get_alerts(request):
     house_number, refit_house = get_user_refit_household(request.user)
