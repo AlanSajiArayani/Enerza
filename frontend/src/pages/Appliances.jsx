@@ -1,17 +1,11 @@
 import React, { useEffect, useState } from 'react';
-import { 
-  getAppliances, 
-  getUserAppliances, 
-  getApplianceCatalog, 
-  createUserAppliance, 
-  updateUserAppliance, 
-  deleteUserAppliance 
+import {
+  getAppliances, getUserAppliances, addUserAppliance, deleteUserAppliance,
+  toggleAppliancePower, setApplianceLimit, updateUserAppliance
 } from '../services/api';
-import { useAuth } from '../context/AuthContext';
-import { 
+import {
   Zap, IndianRupee, AlertTriangle, CheckCircle2, ChevronRight, TrendingUp,
-  Plus, Trash2, Edit3, Filter, ArrowUpDown, X, Activity, Radio, Cpu,
-  Tv, Laptop, Monitor, Lightbulb, Fan, Snowflake, Flame, Wifi, Coffee, Droplet, Plug
+  Plus, Trash2, Wifi, Cpu, Power, ShieldAlert, Sliders
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
@@ -27,694 +21,501 @@ const CardSkeleton = () => (
   </div>
 );
 
-/* ─── REFIT Status badge ─── */
+/* ─── Status badge ─── */
 const StatusBadge = ({ status }) => {
   const map = {
-    Normal:   { cls: 'badge-green',  label: 'Normal' },
-    Elevated: { cls: 'badge-amber',  label: 'Elevated' },
-    Abnormal: { cls: 'badge-red',    label: 'Abnormal' },
-    default:  { cls: 'badge-slate',  label: status },
+    Normal:                    { cls: 'badge-green', label: 'Normal' },
+    Elevated:                  { cls: 'badge-amber', label: 'Elevated' },
+    'Turned OFF':              { cls: 'badge-red',   label: 'OFF' },
+    'Auto OFF (Limit Exceeded)': { cls: 'badge-red',   label: 'Auto Off (Limit)' },
+    default:                   { cls: 'badge-slate', label: status },
   };
   const { cls, label } = map[status] || map.default;
   return <span className={`badge ${cls}`}>{label}</span>;
 };
 
-/* ─── Icon Resolver ─── */
-const renderApplianceIcon = (iconKey, size = 18, className = '') => {
-  switch (iconKey) {
-    case 'tv': return <Tv size={size} className={className} />;
-    case 'laptop': return <Laptop size={size} className={className} />;
-    case 'desktop': return <Monitor size={size} className={className} />;
-    case 'bulb': return <Lightbulb size={size} className={className} />;
-    case 'fan': return <Fan size={size} className={className} />;
-    case 'ac': return <Snowflake size={size} className={className} />;
-    case 'heater':
-    case 'geyser': return <Flame size={size} className={className} />;
-    case 'wifi': return <Wifi size={size} className={className} />;
-    case 'fridge': return <Cpu size={size} className={className} />;
-    case 'washing_machine': return <Activity size={size} className={className} />;
-    case 'kettle':
-    case 'blender': return <Coffee size={size} className={className} />;
-    case 'pump': return <Droplet size={size} className={className} />;
-    case 'microwave':
-    case 'oven':
-    case 'cooktop': return <Flame size={size} className={className} />;
-    default: return <Plug size={size} className={className} />;
-  }
-};
-
-/* ─── Category Badge ─── */
-const CategoryBadge = ({ category }) => {
-  if (category === 'high') {
-    return <span className="badge badge-red font-semibold">High Power</span>;
-  }
-  if (category === 'moderate') {
-    return <span className="badge badge-amber font-semibold">Moderate Power</span>;
-  }
-  return <span className="badge badge-green font-semibold">Low Power</span>;
-};
-
 /* ─── Appliances Page ─── */
 const Appliances = () => {
-  const { profile } = useAuth();
-  const tariff = profile?.electricity_tariff || 8.0;
+  const [activeTab, setActiveTab] = useState('refit');
+  const [appliances, setAppliances] = useState([]);
+  const [userAppliances, setUserAppliances] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [limitInputs, setLimitInputs] = useState({});
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [newDevice, setNewDevice] = useState({
+    name: '',
+    appliance_type: 'HVAC / Cooling',
+    rated_power_watts: 1500,
+    power_category: 'high',
+    iot_enabled: true,
+    iot_device_name: '',
+    iot_status: 'Connected',
+    power_state: true,
+    auto_turn_off_enabled: false,
+    usage_limit_watts: 2000
+  });
+
   const navigate = useNavigate();
 
-  // State for REFIT appliances
-  const [refitAppliances, setRefitAppliances] = useState([]);
-  const [loadingRefit, setLoadingRefit] = useState(true);
-
-  // State for User appliances
-  const [userAppliances, setUserAppliances] = useState([]);
-  const [loadingUser, setLoadingUser] = useState(true);
-  const [catalog, setCatalog] = useState([]);
-
-  // UI state for filter, sort, modal
-  const [categoryFilter, setCategoryFilter] = useState('all'); // all, high, moderate, low
-  const [sortBy, setSortBy] = useState('newest'); // newest, name, power_desc, power_asc
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [editingAppliance, setEditingAppliance] = useState(null);
-
-  // Form state
-  const [formData, setFormData] = useState({
-    name: '',
-    appliance_type: 'Refrigerator',
-    rated_power_watts: 150,
-    icon_key: 'fridge',
-    iot_enabled: false,
-    iot_device_name: '',
-  });
-  const [formError, setFormError] = useState('');
-  const [isSubmitting, setIsSubmitting] = useState(false);
-
-  // Delete confirmation modal state
-  const [deletingId, setDeletingId] = useState(null);
-
-  // Dummy live IoT power readings simulator
-  const [liveReadings, setLiveReadings] = useState({});
-
-  // Fetch data
-  const loadUserAppliances = async () => {
-    try {
-      const data = await getUserAppliances();
-      setUserAppliances(data);
-    } catch (err) {
-      console.error('Failed to load user appliances:', err);
-    } finally {
-      setLoadingUser(false);
-    }
+  const loadData = () => {
+    setLoading(true);
+    Promise.all([
+      getAppliances().catch(() => []),
+      getUserAppliances().catch(() => [])
+    ]).then(([refitRes, userRes]) => {
+      setAppliances(refitRes || []);
+      setUserAppliances(userRes || []);
+      setLoading(false);
+    });
   };
 
   useEffect(() => {
-    getAppliances()
-      .then(res => { setRefitAppliances(res); setLoadingRefit(false); })
-      .catch(err => { console.error(err); setLoadingRefit(false); });
-
-    loadUserAppliances();
-
-    getApplianceCatalog()
-      .then(res => setCatalog(res))
-      .catch(err => console.error('Failed to load catalog:', err));
+    loadData();
   }, []);
 
-  // Update IoT dummy live readings periodically (every 3s)
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setLiveReadings(prev => {
-        const next = { ...prev };
-        userAppliances.forEach(app => {
-          if (app.iot_enabled) {
-            // Variation around rated power (-10% to +15%)
-            const base = app.rated_power_watts || 100;
-            const variance = (Math.random() * 0.25 - 0.1);
-            const simulatedCurrentPower = Math.max(1, Math.round(base * (1 + variance)));
-            next[app.id] = {
-              current_watts: simulatedCurrentPower,
-              last_updated: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-            };
-          }
-        });
-        return next;
-      });
-    }, 3000);
-
-    return () => clearInterval(interval);
-  }, [userAppliances]);
-
-  // Handle Catalog Selection in Form
-  const handleCatalogSelect = (e) => {
-    const selectedType = e.target.value;
-    const catItem = catalog.find(c => c.type === selectedType);
-    if (catItem) {
-      setFormData(prev => ({
-        ...prev,
-        appliance_type: catItem.type,
-        name: catItem.default_name,
-        rated_power_watts: catItem.default_power,
-        icon_key: catItem.icon_key,
-        iot_device_name: prev.iot_enabled ? `${catItem.default_name} IoT Sensor` : '',
-      }));
-    } else {
-      setFormData(prev => ({
-        ...prev,
-        appliance_type: selectedType,
-        icon_key: 'custom',
-      }));
-    }
+  /* ── Power Toggle Handler ── */
+  const handleTogglePower = (id, currentState, e) => {
+    if (e) e.stopPropagation();
+    toggleAppliancePower(id, !currentState)
+      .then(() => loadData())
+      .catch(console.error);
   };
 
-  // Open Modal for Add
-  const openAddModal = () => {
-    setEditingAppliance(null);
-    const defaultCat = catalog[0] || { type: 'Refrigerator', default_name: 'Kitchen Refrigerator', default_power: 150, icon_key: 'fridge' };
-    setFormData({
-      name: defaultCat.default_name || 'Kitchen Fridge',
-      appliance_type: defaultCat.type || 'Refrigerator',
-      rated_power_watts: defaultCat.default_power || 150,
-      icon_key: defaultCat.icon_key || 'fridge',
-      iot_enabled: false,
-      iot_device_name: '',
-    });
-    setFormError('');
-    setIsModalOpen(true);
+  /* ── Save Auto Turn-Off Limit Handler ── */
+  const handleSaveLimit = (id, limitVal, enableAutoOff, e) => {
+    if (e) e.stopPropagation();
+    const watts = parseFloat(limitVal) || 2000;
+    setApplianceLimit(id, {
+      usage_limit_watts: watts,
+      auto_turn_off_enabled: enableAutoOff
+    }).then(() => loadData()).catch(console.error);
   };
 
-  // Open Modal for Edit
-  const openEditModal = (app) => {
-    setEditingAppliance(app);
-    setFormData({
-      name: app.name,
-      appliance_type: app.appliance_type,
-      rated_power_watts: app.rated_power_watts,
-      icon_key: app.icon_key,
-      iot_enabled: app.iot_enabled,
-      iot_device_name: app.iot_device_name || '',
-    });
-    setFormError('');
-    setIsModalOpen(true);
+  const handleToggleUserAppPower = (dev, e) => {
+    if (e) e.stopPropagation();
+    updateUserAppliance(dev.id, { power_state: !dev.power_state })
+      .then(() => loadData())
+      .catch(console.error);
   };
 
-  // Form Submit
-  const handleFormSubmit = async (e) => {
+  const handleSaveUserAppLimit = (dev, limitVal, enableAutoOff, e) => {
+    if (e) e.stopPropagation();
+    const watts = parseFloat(limitVal) || dev.rated_power_watts || 2000;
+    updateUserAppliance(dev.id, {
+      usage_limit_watts: watts,
+      auto_turn_off_enabled: enableAutoOff
+    }).then(() => loadData()).catch(console.error);
+  };
+
+  const handleAddSubmit = (e) => {
     e.preventDefault();
-    if (!formData.name.trim()) {
-      setFormError('Appliance name is required.');
-      return;
-    }
-    if (formData.rated_power_watts <= 0) {
-      setFormError('Rated power must be a positive number.');
-      return;
-    }
-
-    setIsSubmitting(true);
-    setFormError('');
-
-    try {
-      const payload = {
-        name: formData.name.trim(),
-        appliance_type: formData.appliance_type,
-        rated_power_watts: parseFloat(formData.rated_power_watts),
-        icon_key: formData.icon_key,
-        iot_enabled: formData.iot_enabled,
-        iot_device_name: formData.iot_enabled ? (formData.iot_device_name || `${formData.name} Sensor`) : '',
-        iot_status: formData.iot_enabled ? 'Simulated Connected' : 'Not Connected',
-      };
-
-      if (editingAppliance) {
-        await updateUserAppliance(editingAppliance.id, payload);
-      } else {
-        await createUserAppliance(payload);
-      }
-
-      setIsModalOpen(false);
-      await loadUserAppliances();
-    } catch (err) {
-      console.error('Failed to save appliance:', err);
-      setFormError('Failed to save appliance. Please check your input.');
-    } finally {
-      setIsSubmitting(false);
-    }
+    if (!newDevice.name) return;
+    addUserAppliance({
+      ...newDevice,
+      iot_device_name: newDevice.iot_device_name || `${newDevice.name}-IoT`
+    }).then(() => {
+      setShowAddModal(false);
+      setNewDevice({
+        name: '',
+        appliance_type: 'HVAC / Cooling',
+        rated_power_watts: 1500,
+        power_category: 'high',
+        iot_enabled: true,
+        iot_device_name: '',
+        iot_status: 'Connected',
+        power_state: true,
+        auto_turn_off_enabled: false,
+        usage_limit_watts: 2000
+      });
+      loadData();
+    }).catch(console.error);
   };
 
-  // Delete Action
-  const handleDeleteConfirm = async () => {
-    if (!deletingId) return;
-    try {
-      await deleteUserAppliance(deletingId);
-      setDeletingId(null);
-      await loadUserAppliances();
-    } catch (err) {
-      console.error('Failed to delete appliance:', err);
-    }
+  const handleDeleteUserApp = (id, e) => {
+    e.stopPropagation();
+    deleteUserAppliance(id).then(() => loadData()).catch(console.error);
   };
 
-  // Filter & Sort User Appliances
-  const filteredUserAppliances = userAppliances.filter(app => {
-    if (categoryFilter === 'all') return true;
-    return app.power_category === categoryFilter;
-  });
+  if (loading) {
+    return (
+      <div className="space-y-5 page-enter">
+        <div className="mb-6"><div className="skeleton h-7 w-48 rounded mb-2" /><div className="skeleton h-4 w-64 rounded" /></div>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {[...Array(6)].map((_, i) => <CardSkeleton key={i} />)}
+        </div>
+      </div>
+    );
+  }
 
-  const sortedUserAppliances = [...filteredUserAppliances].sort((a, b) => {
-    if (sortBy === 'name') return a.name.localeCompare(b.name);
-    if (sortBy === 'power_desc') return b.rated_power_watts - a.rated_power_watts;
-    if (sortBy === 'power_asc') return a.rated_power_watts - b.rated_power_watts;
-    return new Date(b.created_at) - new Date(a.created_at); // newest
-  });
-
-  const maxRefitKwh = Math.max(...refitAppliances.map(a => a.today_kwh), 0.001);
+  const maxKwh = Math.max(...appliances.map(a => a.today_kwh), 0.001);
 
   return (
-    <div className="space-y-8 page-enter pb-16">
+    <div className="space-y-5 page-enter pb-12">
 
       {/* Header */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
         <div>
-          <p className="text-[10px] font-semibold tracking-widest uppercase mb-1" style={{ color: '#334155' }}>Citizen Dashboard</p>
-          <h1 className="text-2xl font-bold text-white tracking-tight">Appliance Management & Intelligence</h1>
-          <p className="text-[13px] mt-1" style={{ color: '#64748b' }}>Manage your personal appliances, simulate IoT devices, and inspect REFIT analytics.</p>
-        </div>
-        <button
-          onClick={openAddModal}
-          className="btn-primary flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-xl shadow-lg shadow-blue-500/20"
-        >
-          <Plus size={16} />
-          <span>Add Appliance</span>
-        </button>
-      </div>
-
-      {/* ─── SECTION 1: MY SAVED APPLIANCES ─── */}
-      <div className="space-y-4">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 pb-3" style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-          <div className="flex items-center gap-2">
-            <Cpu className="text-blue-400" size={20} />
-            <h2 className="text-lg font-bold text-white">My Saved Appliances</h2>
-            <span className="ml-2 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-500/10 text-blue-400 border border-blue-500/20">
-              {userAppliances.length} Saved
-            </span>
-          </div>
-
-          {/* Filter & Sort Controls */}
-          <div className="flex flex-wrap items-center gap-3">
-            {/* Category Filter Tabs */}
-            <div className="flex items-center rounded-xl p-1 gap-1" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}>
-              {[
-                { id: 'all', label: 'All' },
-                { id: 'high', label: 'High Power' },
-                { id: 'moderate', label: 'Moderate' },
-                { id: 'low', label: 'Low Power' },
-              ].map(tab => (
-                <button
-                  key={tab.id}
-                  onClick={() => setCategoryFilter(tab.id)}
-                  className={`px-3 py-1 text-[11px] font-semibold rounded-lg transition-all ${
-                    categoryFilter === tab.id
-                      ? 'bg-blue-600 text-white shadow'
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  {tab.label}
-                </button>
-              ))}
-            </div>
-
-            {/* Sort Dropdown */}
-            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}>
-              <ArrowUpDown size={13} className="text-slate-400" />
-              <select
-                value={sortBy}
-                onChange={e => setSortBy(e.target.value)}
-                className="bg-transparent text-slate-300 text-xs font-medium focus:outline-none cursor-pointer"
-              >
-                <option value="newest" className="bg-slate-900 text-white">Newest Added</option>
-                <option value="name" className="bg-slate-900 text-white">Name A–Z</option>
-                <option value="power_desc" className="bg-slate-900 text-white">Highest Power</option>
-                <option value="power_asc" className="bg-slate-900 text-white">Lowest Power</option>
-              </select>
-            </div>
-          </div>
+          <p className="text-[10px] font-semibold tracking-widest uppercase mb-1.5 text-slate-500">Appliances</p>
+          <h1 className="text-2xl font-bold text-white tracking-tight">Appliance Intelligence & IoT Control</h1>
+          <p className="text-[13px] mt-1 text-slate-400">Power control, IoT device switches, and auto turn-off threshold protection.</p>
         </div>
 
-        {/* User Appliances Grid / Empty State */}
-        {loadingUser ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {[...Array(3)].map((_, i) => <CardSkeleton key={i} />)}
-          </div>
-        ) : sortedUserAppliances.length === 0 ? (
-          <div className="premium-card p-8 text-center space-y-3 max-w-lg mx-auto my-6">
-            <div className="w-12 h-12 rounded-2xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center mx-auto text-blue-400">
-              <Plug size={24} />
-            </div>
-            <h3 className="text-base font-bold text-white">No appliances added yet</h3>
-            <p className="text-xs text-slate-400 leading-relaxed">
-              Add your first appliance to organize household device specs and enable simulated live IoT monitoring.
-            </p>
+        <div className="flex items-center gap-3">
+          {/* Tab buttons */}
+          <div className="flex rounded-xl p-1" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}>
             <button
-              onClick={openAddModal}
-              className="btn-primary inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-xl"
+              onClick={() => setActiveTab('refit')}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all flex items-center gap-1.5 ${
+                activeTab === 'refit' ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' : 'text-slate-400 hover:text-white'
+              }`}
             >
-              <Plus size={14} />
-              <span>Add Your First Appliance</span>
+              <Zap size={13} />
+              REFIT Devices ({appliances.length})
+            </button>
+            <button
+              onClick={() => setActiveTab('user')}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all flex items-center gap-1.5 ${
+                activeTab === 'user' ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              <Cpu size={13} />
+              My Saved IoT ({userAppliances.length})
             </button>
           </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {sortedUserAppliances.map(app => {
-              const live = liveReadings[app.id] || { current_watts: app.rated_power_watts, last_updated: 'Just now' };
-              const dailyKwhEst = app.iot_enabled 
-                ? ((live.current_watts * 24) / 1000).toFixed(2)
-                : ((app.rated_power_watts * 8) / 1000).toFixed(2); // Assume 8h average usage for static estimate
-              const estCost = (dailyKwhEst * tariff).toFixed(1);
 
-              return (
-                <div key={app.id} className="premium-card p-5 space-y-4 relative group">
-                  {/* Top Bar: Icon + Name + Actions */}
-                  <div className="flex items-start justify-between">
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400 flex-shrink-0">
-                        {renderApplianceIcon(app.icon_key, 20)}
-                      </div>
-                      <div>
-                        <h3 className="text-sm font-bold text-white group-hover:text-blue-400 transition-colors">{app.name}</h3>
-                        <p className="text-[11px] text-slate-400">{app.appliance_type}</p>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-1 opacity-95">
-                      <button
-                        onClick={() => openEditModal(app)}
-                        className="p-1.5 rounded-lg hover:bg-white/10 text-slate-400 hover:text-white transition-colors"
-                        title="Edit Appliance"
-                      >
-                        <Edit3 size={14} />
-                      </button>
-                      <button
-                        onClick={() => setDeletingId(app.id)}
-                        className="p-1.5 rounded-lg hover:bg-red-500/20 text-slate-400 hover:text-red-400 transition-colors"
-                        title="Delete Appliance"
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Specs Row */}
-                  <div className="flex items-center justify-between pt-1">
-                    <div>
-                      <span className="text-[10px] text-slate-500 uppercase tracking-wider block">Rated Power</span>
-                      <span className="text-xs font-bold text-white">{app.rated_power_watts} W</span>
-                    </div>
-                    <div>
-                      <span className="text-[10px] text-slate-500 uppercase tracking-wider block mb-0.5">Category</span>
-                      <CategoryBadge category={app.power_category} />
-                    </div>
-                  </div>
-
-                  {/* IoT Section */}
-                  {app.iot_enabled ? (
-                    <div className="rounded-xl p-3 space-y-2 bg-gradient-to-r from-blue-950/40 to-slate-900/60 border border-blue-500/20">
-                      <div className="flex items-center justify-between text-[11px]">
-                        <span className="inline-flex items-center gap-1.5 font-semibold text-emerald-400">
-                          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                          Simulated IoT Data
-                        </span>
-                        <span className="text-[10px] text-slate-400">{live.last_updated}</span>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-2 pt-1">
-                        <div className="bg-black/20 rounded-lg p-2">
-                          <span className="text-[10px] text-slate-400 block">Current Reading</span>
-                          <span className="text-xs font-bold text-blue-300 flex items-center gap-1">
-                            <Zap size={11} className="text-blue-400" />
-                            {live.current_watts} W
-                          </span>
-                        </div>
-                        <div className="bg-black/20 rounded-lg p-2">
-                          <span className="text-[10px] text-slate-400 block">Est. Daily Cost</span>
-                          <span className="text-xs font-bold text-amber-400 flex items-center gap-0.5">
-                            <IndianRupee size={10} />
-                            {estCost}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="rounded-xl p-2.5 bg-white/[0.02] border border-white/5 flex items-center justify-between text-[11px]">
-                      <span className="text-slate-400">IoT Connection</span>
-                      <span className="text-slate-500 font-medium">Not Connected</span>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
+          {activeTab === 'user' && (
+            <button
+              onClick={() => setShowAddModal(true)}
+              className="px-3.5 py-1.5 rounded-xl text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 transition-all flex items-center gap-1.5 shadow-lg shadow-blue-500/20"
+            >
+              <Plus size={14} /> Add Appliance
+            </button>
+          )}
+        </div>
       </div>
 
-      {/* ─── SECTION 2: REFIT APPLIANCE ANALYTICS (UNTOUCHED CORE DATASET) ─── */}
-      <div className="space-y-4 pt-4">
-        <div className="flex items-center justify-between pb-3" style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-          <div>
-            <h2 className="text-lg font-bold text-white flex items-center gap-2">
-              <Zap className="text-amber-400" size={20} />
-              REFIT Appliance Analytics
-            </h2>
-            <p className="text-xs text-slate-400">Main historical dataset intelligence & disaggregated device status.</p>
-          </div>
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full text-[11px] font-semibold"
-            style={{ background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.18)', color: '#60a5fa' }}>
-            {refitAppliances.length} REFIT Devices
-          </div>
-        </div>
+      {/* ── REFIT Smart Meter Appliances Tab ── */}
+      {activeTab === 'refit' && (
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {appliances.map(app => {
+              const barPct = (app.today_kwh / maxKwh) * 100;
+              const isElevated = app.status === 'Elevated';
+              const isOff = !app.power_state;
 
-        {loadingRefit ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {[...Array(6)].map((_, i) => <CardSkeleton key={i} />)}
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {refitAppliances.map(app => {
-              const barPct = (app.today_kwh / maxRefitKwh) * 100;
-              const isElevated = app.status !== 'Normal';
               return (
                 <div
                   key={app.id}
-                  className="premium-card p-5 cursor-pointer group hover:border-blue-500/40 transition-all"
+                  className={`premium-card p-5 cursor-pointer group transition-all relative ${
+                    isOff ? 'opacity-75 border-red-500/20' : 'hover:border-blue-500/40'
+                  }`}
                   onClick={() => navigate(`/appliances/${app.id}`)}
                 >
                   {/* Top row */}
-                  <div className="flex items-start justify-between mb-4">
+                  <div className="flex items-start justify-between mb-3">
                     <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
-                        style={{ background: isElevated ? 'rgba(245,158,11,0.1)' : 'rgba(59,130,246,0.1)', border: `1px solid ${isElevated ? 'rgba(245,158,11,0.2)' : 'rgba(59,130,246,0.2)'}` }}>
-                        <Zap size={15} style={{ color: isElevated ? '#f59e0b' : '#3b82f6' }} />
+                      <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
+                        style={{
+                          background: isOff ? 'rgba(239,68,68,0.1)' : isElevated ? 'rgba(245,158,11,0.1)' : 'rgba(59,130,246,0.1)',
+                          border: `1px solid ${isOff ? 'rgba(239,68,68,0.2)' : isElevated ? 'rgba(245,158,11,0.2)' : 'rgba(59,130,246,0.2)'}`
+                        }}>
+                        <Zap size={16} style={{ color: isOff ? '#ef4444' : isElevated ? '#f59e0b' : '#3b82f6' }} />
                       </div>
                       <div>
-                        <h3 className="text-[13px] font-semibold text-white group-hover:text-blue-400 transition-colors leading-tight">{app.name}</h3>
+                        <h3 className="text-[13px] font-semibold text-white group-hover:text-blue-400 transition-colors leading-tight flex items-center gap-2">
+                          {app.name}
+                        </h3>
                         <StatusBadge status={app.status} />
                       </div>
                     </div>
-                    <ChevronRight size={15} className="text-slate-700 group-hover:text-slate-400 transition-colors" />
+
+                    {/* IoT Power Toggle Switch */}
+                    <button
+                      onClick={(e) => handleTogglePower(app.id, app.power_state, e)}
+                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all ${
+                        app.power_state
+                          ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25'
+                          : 'bg-red-500/15 text-red-400 border border-red-500/30 hover:bg-red-500/25'
+                      }`}
+                      title="Turn Appliance ON / OFF"
+                    >
+                      <Power size={12} />
+                      {app.power_state ? 'ON' : 'OFF'}
+                    </button>
                   </div>
 
                   {/* Consumption bar */}
-                  <div className="mb-4">
+                  <div className="mb-3">
                     <div className="flex justify-between items-baseline mb-1.5">
-                      <span className="text-[11px]" style={{ color: '#475569' }}>Today's usage</span>
-                      <span className="text-[13px] font-bold text-white">{app.today_kwh} kWh</span>
+                      <span className="text-[11px] text-slate-500">Today's usage</span>
+                      <span className="text-[13px] font-bold text-white">{isOff ? '0.0 kWh' : `${app.today_kwh} kWh`}</span>
                     </div>
                     <div className="progress-bar">
-                      <div className="progress-fill" style={{ width: `${barPct}%`, background: isElevated ? 'linear-gradient(90deg,#f59e0b,#fbbf24)' : 'linear-gradient(90deg,#3b82f6,#60a5fa)' }} />
+                      <div className="progress-fill" style={{ width: `${isOff ? 0 : barPct}%`, background: isElevated ? 'linear-gradient(90deg,#f59e0b,#fbbf24)' : 'linear-gradient(90deg,#3b82f6,#60a5fa)' }} />
                     </div>
                   </div>
 
                   {/* Stats */}
                   <div className="grid grid-cols-2 gap-2">
-                    <div className="rounded-lg px-3 py-2" style={{ background: 'rgba(255,255,255,0.03)' }}>
-                      <p className="text-[10px] font-semibold tracking-wider uppercase mb-1" style={{ color: '#334155' }}>Monthly</p>
-                      <p className="text-[13px] font-semibold text-white">{app.monthly_kwh} kWh</p>
+                    <div className="rounded-lg px-3 py-1.5" style={{ background: 'rgba(255,255,255,0.03)' }}>
+                      <p className="text-[9px] font-semibold tracking-wider uppercase text-slate-500 mb-0.5">Monthly</p>
+                      <p className="text-[12px] font-semibold text-white">{app.monthly_kwh} kWh</p>
                     </div>
-                    <div className="rounded-lg px-3 py-2" style={{ background: 'rgba(255,255,255,0.03)' }}>
-                      <p className="text-[10px] font-semibold tracking-wider uppercase mb-1" style={{ color: '#334155' }}>Est. Cost</p>
-                      <p className="text-[13px] font-semibold text-amber-400 flex items-center gap-0.5">
-                        <IndianRupee size={11} />{app.estimated_cost}
+                    <div className="rounded-lg px-3 py-1.5" style={{ background: 'rgba(255,255,255,0.03)' }}>
+                      <p className="text-[9px] font-semibold tracking-wider uppercase text-slate-500 mb-0.5">Est. Cost</p>
+                      <p className="text-[12px] font-semibold text-amber-400 flex items-center gap-0.5">
+                        <IndianRupee size={10} />{isOff ? 0 : app.estimated_cost}
                       </p>
                     </div>
                   </div>
 
-                  {/* Avg comparison */}
-                  {app.avg_kwh > 0 && (
-                    <div className="mt-3 pt-3" style={{ borderTop: '1px solid rgba(255,255,255,0.05)' }}>
-                      <div className="flex items-center gap-1.5 text-[11px]">
-                        {app.today_kwh > app.avg_kwh
-                          ? <TrendingUp size={12} style={{ color: '#f59e0b' }} />
-                          : <CheckCircle2 size={12} style={{ color: '#10b981' }} />}
-                        <span style={{ color: '#475569' }}>Avg: {app.avg_kwh} kWh/day</span>
-                        {app.today_kwh > app.avg_kwh && (
-                          <span className="ml-auto font-medium" style={{ color: '#f59e0b' }}>
-                            +{Math.round(((app.today_kwh - app.avg_kwh) / app.avg_kwh) * 100)}%
-                          </span>
-                        )}
-                      </div>
+                  {/* ── Auto Turn-Off Limit Control Below Card ── */}
+                  <div className="mt-3 pt-3 space-y-2 border-t border-slate-800/60" onClick={e => e.stopPropagation()}>
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="flex items-center gap-1 text-slate-400 font-medium">
+                        <ShieldAlert size={12} className="text-amber-400" />
+                        Auto Turn-Off Limit
+                      </span>
+                      <button
+                        onClick={(e) => handleSaveLimit(app.id, limitInputs[app.id] ?? app.usage_limit_watts, !app.auto_turn_off_enabled, e)}
+                        className={`text-[10px] font-bold px-2 py-0.5 rounded transition-all ${
+                          app.auto_turn_off_enabled
+                            ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                            : 'bg-slate-800 text-slate-500 border border-slate-700'
+                        }`}
+                      >
+                        {app.auto_turn_off_enabled ? 'Active' : 'Disabled'}
+                      </button>
                     </div>
-                  )}
+
+                    <div className="flex items-center gap-2">
+                      <div className="relative flex-1">
+                        <input
+                          type="number"
+                          step="100"
+                          value={limitInputs[app.id] ?? app.usage_limit_watts ?? 2000}
+                          onChange={e => setLimitInputs({ ...limitInputs, [app.id]: e.target.value })}
+                          placeholder="Limit W"
+                          className="w-full px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-700 text-white text-xs focus:outline-none focus:border-amber-500 pr-6"
+                        />
+                        <span className="absolute right-2 top-1 text-[10px] text-slate-500 font-bold">W</span>
+                      </div>
+                      <button
+                        onClick={(e) => handleSaveLimit(app.id, limitInputs[app.id] ?? app.usage_limit_watts, true, e)}
+                        className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 text-xs font-semibold border border-amber-500/30 transition-all flex-shrink-0"
+                      >
+                        Set Limit
+                      </button>
+                    </div>
+                  </div>
                 </div>
               );
             })}
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
-      {/* ─── ADD / EDIT MODAL ─── */}
-      {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-fade-in">
-          <div className="bg-slate-900 border border-slate-700/80 rounded-2xl max-w-md w-full p-6 space-y-5 shadow-2xl relative">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-              <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                <Plus size={18} className="text-blue-400" />
-                {editingAppliance ? 'Edit Appliance' : 'Add New Appliance'}
-              </h3>
+      {/* ── My Saved Appliances & IoT Devices Tab ── */}
+      {activeTab === 'user' && (
+        <div className="space-y-4">
+          {userAppliances.length === 0 ? (
+            <div className="premium-card p-10 text-center flex flex-col items-center gap-3">
+              <div className="w-12 h-12 rounded-2xl flex items-center justify-center bg-blue-500/10 border border-blue-500/20 text-blue-400">
+                <Cpu size={24} />
+              </div>
+              <h3 className="text-base font-semibold text-white">No Saved IoT Devices Yet</h3>
+              <p className="text-xs text-slate-400 max-w-md">Add your custom smart appliances or simulated IoT smart plugs to enable power control and auto turn-off limits.</p>
               <button
-                onClick={() => setIsModalOpen(false)}
-                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800"
+                onClick={() => setShowAddModal(true)}
+                className="mt-2 px-4 py-2 rounded-xl text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 transition-all flex items-center gap-1.5"
               >
-                <X size={18} />
+                <Plus size={14} /> Add First Appliance
               </button>
             </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {userAppliances.map(dev => {
+                const isOff = !dev.power_state;
 
-            {formError && (
-              <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-xs text-red-400 flex items-center gap-2">
-                <AlertTriangle size={14} className="flex-shrink-0" />
-                <span>{formError}</span>
-              </div>
-            )}
+                return (
+                  <div key={dev.id} className={`premium-card p-5 relative group transition-all ${isOff ? 'opacity-75 border-red-500/20' : ''}`}>
+                    <div className="flex items-start justify-between mb-3">
+                      <div className="flex items-center gap-3">
+                        <div className="w-9 h-9 rounded-xl flex items-center justify-center bg-cyan-500/10 border border-cyan-500/20 text-cyan-400">
+                          <Wifi size={17} />
+                        </div>
+                        <div>
+                          <h3 className="text-sm font-semibold text-white">{dev.name}</h3>
+                          <p className="text-[11px] text-slate-400">{dev.appliance_type}</p>
+                        </div>
+                      </div>
 
-            <form onSubmit={handleFormSubmit} className="space-y-4">
-              {/* Select from catalog */}
-              {!editingAppliance && (
-                <div>
-                  <label className="text-xs font-semibold text-slate-300 block mb-1">Select from Catalog</label>
-                  <select
-                    value={formData.appliance_type}
-                    onChange={handleCatalogSelect}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500"
-                  >
-                    {catalog.map(cat => (
-                      <option key={cat.type} value={cat.type}>{cat.type}</option>
-                    ))}
-                  </select>
-                </div>
-              )}
+                      <div className="flex items-center gap-2">
+                        {/* IoT Power Toggle Switch */}
+                        <button
+                          onClick={(e) => handleToggleUserAppPower(dev, e)}
+                          className={`flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold transition-all ${
+                            dev.power_state
+                              ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25'
+                              : 'bg-red-500/15 text-red-400 border border-red-500/30 hover:bg-red-500/25'
+                          }`}
+                        >
+                          <Power size={11} />
+                          {dev.power_state ? 'ON' : 'OFF'}
+                        </button>
 
-              {/* Name */}
+                        <button
+                          onClick={(e) => handleDeleteUserApp(dev.id, e)}
+                          className="text-slate-600 hover:text-red-400 transition-colors p-1"
+                          title="Delete Device"
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 mt-4">
+                      <div className="rounded-lg px-3 py-2" style={{ background: 'rgba(255,255,255,0.03)' }}>
+                        <p className="text-[10px] font-semibold tracking-wider uppercase text-slate-500 mb-1">Power Rating</p>
+                        <p className="text-[13px] font-bold text-white">{dev.rated_power_watts} W</p>
+                      </div>
+                      <div className="rounded-lg px-3 py-2" style={{ background: 'rgba(255,255,255,0.03)' }}>
+                        <p className="text-[10px] font-semibold tracking-wider uppercase text-slate-500 mb-1">IoT Status</p>
+                        <p className="text-[12px] font-semibold text-emerald-400 flex items-center gap-1">
+                          <CheckCircle2 size={12} /> {dev.iot_status || 'Connected'}
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* ── Auto Turn-Off Limit Control Below Card ── */}
+                    <div className="mt-3 pt-3 space-y-2 border-t border-slate-800/60">
+                      <div className="flex items-center justify-between text-[11px]">
+                        <span className="flex items-center gap-1 text-slate-400 font-medium">
+                          <ShieldAlert size={12} className="text-amber-400" />
+                          Auto Turn-Off Limit
+                        </span>
+                        <button
+                          onClick={(e) => handleSaveUserAppLimit(dev, limitInputs[dev.id] ?? dev.usage_limit_watts, !dev.auto_turn_off_enabled, e)}
+                          className={`text-[10px] font-bold px-2 py-0.5 rounded transition-all ${
+                            dev.auto_turn_off_enabled
+                              ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                              : 'bg-slate-800 text-slate-500 border border-slate-700'
+                          }`}
+                        >
+                          {dev.auto_turn_off_enabled ? 'Active' : 'Disabled'}
+                        </button>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <div className="relative flex-1">
+                          <input
+                            type="number"
+                            step="100"
+                            value={limitInputs[dev.id] ?? dev.usage_limit_watts ?? 2000}
+                            onChange={e => setLimitInputs({ ...limitInputs, [dev.id]: e.target.value })}
+                            placeholder="Limit W"
+                            className="w-full px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-700 text-white text-xs focus:outline-none focus:border-amber-500 pr-6"
+                          />
+                          <span className="absolute right-2 top-1 text-[10px] text-slate-500 font-bold">W</span>
+                        </div>
+                        <button
+                          onClick={(e) => handleSaveUserAppLimit(dev, limitInputs[dev.id] ?? dev.usage_limit_watts, true, e)}
+                          className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 text-xs font-semibold border border-amber-500/30 transition-all flex-shrink-0"
+                        >
+                          Set Limit
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Add Appliance Modal ── */}
+      {showAddModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div className="premium-card p-6 w-full max-w-md space-y-4 count-up" style={{ border: '1px solid rgba(255,255,255,0.12)' }}>
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <h3 className="text-base font-bold text-white flex items-center gap-2">
+                <Plus size={16} className="text-blue-400" /> Add Custom Appliance
+              </h3>
+              <button onClick={() => setShowAddModal(false)} className="text-slate-400 hover:text-white text-lg">✕</button>
+            </div>
+
+            <form onSubmit={handleAddSubmit} className="space-y-4 text-xs">
               <div>
-                <label className="text-xs font-semibold text-slate-300 block mb-1">Appliance Name</label>
+                <label className="block text-slate-400 mb-1">Appliance Name</label>
                 <input
                   type="text"
-                  value={formData.name}
-                  onChange={e => setFormData({ ...formData, name: e.target.value })}
-                  placeholder="e.g. Kitchen Refrigerator"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500"
+                  required
+                  placeholder="e.g. Master Bedroom AC"
+                  value={newDevice.name}
+                  onChange={e => setNewDevice({ ...newDevice, name: e.target.value })}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-blue-500"
                 />
               </div>
 
-              {/* Rated Power */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-slate-400 mb-1">Type / Category</label>
+                  <select
+                    value={newDevice.appliance_type}
+                    onChange={e => setNewDevice({ ...newDevice, appliance_type: e.target.value })}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-blue-500"
+                  >
+                    <option value="HVAC / Cooling">HVAC / Cooling</option>
+                    <option value="Refrigeration">Refrigeration</option>
+                    <option value="Laundry">Laundry</option>
+                    <option value="Entertainment">Entertainment</option>
+                    <option value="Cooking / Kitchen">Cooking / Kitchen</option>
+                    <option value="EV Charging">EV Charging</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-slate-400 mb-1">Power Rating (Watts)</label>
+                  <input
+                    type="number"
+                    required
+                    min="1"
+                    value={newDevice.rated_power_watts}
+                    onChange={e => setNewDevice({ ...newDevice, rated_power_watts: parseFloat(e.target.value) })}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+              </div>
+
               <div>
-                <label className="text-xs font-semibold text-slate-300 block mb-1">Rated Power (Watts)</label>
+                <label className="block text-slate-400 mb-1">Auto Turn-Off Threshold (Watts)</label>
                 <input
                   type="number"
-                  value={formData.rated_power_watts}
-                  onChange={e => setFormData({ ...formData, rated_power_watts: e.target.value })}
-                  placeholder="e.g. 150"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500"
+                  min="1"
+                  placeholder="e.g. 2000"
+                  value={newDevice.usage_limit_watts}
+                  onChange={e => setNewDevice({ ...newDevice, usage_limit_watts: parseFloat(e.target.value) })}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-blue-500"
                 />
-                <span className="text-[10px] text-slate-500 mt-1 block">
-                  Auto Category Preview: {' '}
-                  <strong className="text-blue-400">
-                    {formData.rated_power_watts < 300 ? 'Low Power (<300W)' : formData.rated_power_watts <= 1000 ? 'Moderate Power (300-1000W)' : 'High Power (>1000W)'}
-                  </strong>
-                </span>
               </div>
 
-              {/* IoT Checkbox */}
-              <div className="pt-2 border-t border-slate-800">
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={formData.iot_enabled}
-                    onChange={e => setFormData({ 
-                      ...formData, 
-                      iot_enabled: e.target.checked,
-                      iot_device_name: e.target.checked ? (formData.iot_device_name || `${formData.name} Sensor`) : ''
-                    })}
-                    className="w-4 h-4 rounded border-slate-700 bg-slate-950 text-blue-600 focus:ring-0"
-                  />
-                  <span className="text-xs font-semibold text-white">Connect Simulated IoT Device</span>
-                </label>
-              </div>
-
-              {formData.iot_enabled && (
-                <div className="p-3 rounded-xl bg-blue-950/30 border border-blue-500/20 space-y-2">
-                  <label className="text-[11px] font-semibold text-blue-300 block">IoT Device Name</label>
-                  <input
-                    type="text"
-                    value={formData.iot_device_name}
-                    onChange={e => setFormData({ ...formData, iot_device_name: e.target.value })}
-                    placeholder="e.g. Smart Plug #1"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500"
-                  />
-                  <p className="text-[10px] text-slate-400">
-                    Enabling simulated IoT will generate dynamic dummy power readings for testing.
-                  </p>
-                </div>
-              )}
-
-              {/* Action Buttons */}
-              <div className="flex items-center justify-end gap-3 pt-3">
+              <div className="flex justify-end gap-3 pt-2">
                 <button
                   type="button"
-                  onClick={() => setIsModalOpen(false)}
-                  className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-400 hover:text-white bg-slate-800"
+                  onClick={() => setShowAddModal(false)}
+                  className="px-4 py-2 rounded-xl text-slate-400 hover:text-white"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  disabled={isSubmitting}
-                  className="btn-primary px-5 py-2 rounded-xl text-xs font-semibold"
+                  className="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold shadow-lg shadow-blue-500/20"
                 >
-                  {isSubmitting ? 'Saving...' : editingAppliance ? 'Update Appliance' : 'Add Appliance'}
+                  Save Appliance
                 </button>
               </div>
             </form>
-          </div>
-        </div>
-      )}
-
-      {/* ─── DELETE CONFIRMATION MODAL ─── */}
-      {deletingId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-fade-in">
-          <div className="bg-slate-900 border border-slate-700/80 rounded-2xl max-w-sm w-full p-6 space-y-4 shadow-2xl text-center">
-            <div className="w-12 h-12 rounded-full bg-red-500/10 border border-red-500/20 text-red-400 flex items-center justify-center mx-auto">
-              <Trash2 size={22} />
-            </div>
-            <h3 className="text-base font-bold text-white">Remove Appliance?</h3>
-            <p className="text-xs text-slate-400">
-              Are you sure you want to remove this appliance from your saved list? This action cannot be undone.
-            </p>
-            <div className="flex items-center justify-center gap-3 pt-2">
-              <button
-                onClick={() => setDeletingId(null)}
-                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-300 bg-slate-800 hover:bg-slate-700"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleDeleteConfirm}
-                className="px-4 py-2 rounded-xl text-xs font-semibold text-white bg-red-600 hover:bg-red-500 shadow-lg shadow-red-600/20"
-              >
-                Delete
-              </button>
-            </div>
           </div>
         </div>
       )}

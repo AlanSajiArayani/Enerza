@@ -3,8 +3,12 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, PieChart, Pie, Cell
 } from 'recharts';
-import { Zap, TrendingDown, TrendingUp, IndianRupee, Activity, Lightbulb, Sparkles, Play, Pause, RotateCcw, Clock } from 'lucide-react';
-import { getDashboardSummary } from '../services/api';
+import {
+  Zap, TrendingDown, TrendingUp, IndianRupee, Activity, Lightbulb, Sparkles,
+  Play, Pause, RotateCcw, Clock, AlertTriangle, AlertCircle, X, ArrowRight, ShieldAlert, Calendar
+} from 'lucide-react';
+import { getDashboardSummary, getAlerts } from '../services/api';
+import { useNavigate } from 'react-router-dom';
 
 /* ─── Constants ─── */
 const COLORS = ['#3b82f6', '#06b6d4', '#10b981', '#8b5cf6', '#f59e0b', '#ec4899', '#14b8a6'];
@@ -73,7 +77,7 @@ const ChartTooltip = ({ active, payload, label }) => {
         <div key={i} className="flex items-center gap-2">
           <div className="w-2 h-2 rounded-full" style={{ backgroundColor: p.color }} />
           <span style={{ color: '#94a3b8' }}>{p.name}:</span>
-          <span className="font-semibold text-white">{p.value?.toFixed ? p.value.toFixed(3) : p.value} kWh</span>
+          <span className="font-semibold text-white">{p.value?.toFixed ? p.value.toFixed(1) : p.value} {p.unit || 'kWh'}</span>
         </div>
       ))}
     </div>
@@ -91,6 +95,7 @@ const formatSimTime = (isoString) => {
 
 /* ─── Dashboard ─── */
 const Dashboard = () => {
+  const navigate = useNavigate();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -98,15 +103,22 @@ const Dashboard = () => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [speed, setSpeed] = useState(60);
   const [datasetBounds, setDatasetBounds] = useState({ start: null, end: null });
+  const [popupAlert, setPopupAlert] = useState(null);
+  const [dismissedKeys, setDismissedKeys] = useState(new Set());
+  const [timeframeMode, setTimeframeMode] = useState('today');
+  const [inputDate, setInputDate] = useState('2013-10-13');
+  const [inputTime, setInputTime] = useState('18:00');
 
   const fetchDashboard = (simTime) => {
     getDashboardSummary(simTime).then(res => {
       setData(res);
       setLoading(false);
       setError(false);
-      if (res.simulation_time && !currentSimTime) {
+      if (res.simulation_time) {
         setCurrentSimTime(res.simulation_time);
       }
+      if (res.selected_date) setInputDate(res.selected_date);
+      if (res.selected_time) setInputTime(res.selected_time);
       if (res.dataset_start && res.dataset_end) {
         setDatasetBounds({ start: res.dataset_start, end: res.dataset_end });
       }
@@ -117,33 +129,97 @@ const Dashboard = () => {
     });
   };
 
+  const handleApplyCustomDateTime = (e) => {
+    if (e) e.preventDefault();
+    setIsPlaying(false);
+    const customIso = `${inputDate}T${inputTime}:00`;
+    setCurrentSimTime(customIso);
+    fetchDashboard(customIso);
+    fetchAlertsForPopup(customIso);
+  };
+
+  const handleTimeframeSelect = (mode) => {
+    setTimeframeMode(mode);
+    setIsPlaying(false);
+    if (mode === 'today') {
+      const todayIso = '2013-10-13T18:00:00';
+      setInputDate('2013-10-13');
+      setInputTime('18:00');
+      setCurrentSimTime(todayIso);
+      fetchDashboard(todayIso);
+    } else if (mode === 'previous_day') {
+      const prevDayIso = '2013-10-12T18:00:00';
+      setInputDate('2013-10-12');
+      setInputTime('18:00');
+      setCurrentSimTime(prevDayIso);
+      fetchDashboard(prevDayIso);
+    } else if (mode === 'previous_month') {
+      const prevMonthIso = '2013-09-13T18:00:00';
+      setInputDate('2013-09-13');
+      setInputTime('18:00');
+      setCurrentSimTime(prevMonthIso);
+      fetchDashboard(prevMonthIso);
+    }
+  };
+
+  const fetchAlertsForPopup = (simTime) => {
+    getAlerts(simTime)
+      .then(alerts => {
+        if (alerts && alerts.length > 0) {
+          // Strictly look ONLY for active real-time alerts that have not been dismissed
+          const candidate = alerts.find(a => a.is_realtime && !dismissedKeys.has((a.appliance_id || '') + (a.issue || '') + (a.timestamp || '')));
+          if (candidate) {
+            setPopupAlert(candidate);
+          } else {
+            setPopupAlert(null);
+          }
+        } else {
+          setPopupAlert(null);
+        }
+      })
+      .catch(console.error);
+  };
+
   useEffect(() => {
+    setData(null);
+    setLoading(true);
     fetchDashboard(null);
+    fetchAlertsForPopup(null);
   }, []);
 
   useEffect(() => {
-    if (!isPlaying || !currentSimTime) return;
+    if (!isPlaying) return;
 
     const interval = setInterval(() => {
       setCurrentSimTime(prevTime => {
-        if (!prevTime) return prevTime;
+        if (!prevTime || !datasetBounds.end) return prevTime;
         const prevMs = new Date(prevTime).getTime();
-        const nextMs = prevMs + speed * 10000;
-        const endMs = datasetBounds.end ? new Date(datasetBounds.end).getTime() : Infinity;
+        // Dynamic step based on speed multiplier
+        const stepHours = speed <= 1 ? 0.25 : speed <= 10 ? 0.5 : speed <= 60 ? 2 : 6;
+        const nextMs = prevMs + stepHours * 3600 * 1000;
+        const endMs = new Date(datasetBounds.end).getTime();
         
         if (nextMs >= endMs) {
           setIsPlaying(false);
           return datasetBounds.end;
         }
         
-        const nextIso = new Date(nextMs).toISOString();
-        fetchDashboard(nextIso);
-        return nextIso;
+        return new Date(nextMs).toISOString();
       });
-    }, 2500);
+    }, 1500);
 
     return () => clearInterval(interval);
-  }, [isPlaying, speed, currentSimTime, datasetBounds]);
+  }, [isPlaying, speed, datasetBounds]);
+
+  // Fetch updated data whenever simulation time changes
+  useEffect(() => {
+    if (currentSimTime && !loading) {
+      getDashboardSummary(currentSimTime).then(res => {
+        setData(res);
+      }).catch(console.error);
+      fetchAlertsForPopup(currentSimTime);
+    }
+  }, [currentSimTime]);
 
   const handleSliderChange = (e) => {
     if (!datasetBounds.start || !datasetBounds.end) return;
@@ -153,7 +229,6 @@ const Dashboard = () => {
     const selectedMs = startMs + pct * (endMs - startMs);
     const selectedIso = new Date(selectedMs).toISOString();
     setCurrentSimTime(selectedIso);
-    fetchDashboard(selectedIso);
   };
 
   const getSliderValue = () => {
@@ -170,6 +245,7 @@ const Dashboard = () => {
     if (datasetBounds.start) {
       setCurrentSimTime(datasetBounds.start);
       fetchDashboard(datasetBounds.start);
+      fetchAlertsForPopup(datasetBounds.start);
     }
   };
 
@@ -187,6 +263,21 @@ const Dashboard = () => {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
           <div className="lg:col-span-2"><Skeleton className="h-72 w-full" /></div>
           <Skeleton className="h-72 w-full" />
+        </div>
+      </div>
+    );
+  }
+
+  /* Unassigned household state */
+  if (data && data.household_assigned === false) {
+    return (
+      <div className="page-enter glass-panel rounded-2xl p-12 text-center flex flex-col items-center gap-4">
+        <div className="w-12 h-12 rounded-2xl flex items-center justify-center" style={{ background: 'rgba(59,130,246,0.1)', border: '1px solid rgba(59,130,246,0.2)' }}>
+          <Zap size={24} style={{ color: '#3b82f6' }} />
+        </div>
+        <div>
+          <h2 className="text-lg font-semibold text-white mb-1">No Household Assigned</h2>
+          <p className="text-sm" style={{ color: '#64748b' }}>{data.message || 'No REFIT household is assigned to this account.'}</p>
         </div>
       </div>
     );
@@ -217,19 +308,174 @@ const Dashboard = () => {
   const total = data.appliance_distribution.reduce((s, a) => s + a.value, 0);
 
   return (
-    <div className="space-y-5 pb-12 page-enter">
+    <div className="space-y-5 pb-12 page-enter relative">
+
+      {/* ── Real-Time Pop-Up Alert Toast Notification ── */}
+      {popupAlert && (
+        <div className="fixed top-6 right-6 z-50 max-w-md w-full page-enter">
+          <div
+            className="p-4 rounded-2xl shadow-2xl flex items-start gap-3.5 backdrop-blur-xl relative transition-all border"
+            style={{
+              background: 'rgba(15, 23, 42, 0.95)',
+              borderColor: popupAlert.severity === 'high' ? 'rgba(239, 68, 68, 0.4)' : 'rgba(245, 158, 11, 0.4)',
+              boxShadow: popupAlert.severity === 'high' ? '0 10px 40px rgba(239, 68, 68, 0.25)' : '0 10px 40px rgba(245, 158, 11, 0.25)'
+            }}
+          >
+            <div
+              className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
+              style={{
+                background: popupAlert.severity === 'high' ? 'rgba(239, 68, 68, 0.15)' : 'rgba(245, 158, 11, 0.15)',
+                border: `1px solid ${popupAlert.severity === 'high' ? 'rgba(239, 68, 68, 0.3)' : 'rgba(245, 158, 11, 0.3)'}`
+              }}
+            >
+              {popupAlert.severity === 'high' ? (
+                <AlertCircle size={20} className="text-red-400 animate-pulse" />
+              ) : (
+                <AlertTriangle size={20} className="text-amber-400" />
+              )}
+            </div>
+
+            <div className="flex-1 min-w-0 pr-4">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-red-500/20 text-red-300 border border-red-500/30 flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-ping" /> Real-Time Alert
+                </span>
+                <span className="text-slate-400 text-xs font-semibold">• {popupAlert.appliance_name}</span>
+              </div>
+
+              <h4 className="text-sm font-bold text-white leading-tight mb-1">
+                {popupAlert.issue}
+              </h4>
+
+              <p className="text-xs text-slate-300 leading-relaxed mb-2.5">
+                {popupAlert.explanation || 'Abnormal usage surge detected during current simulation replay.'}
+              </p>
+
+              <div className="flex items-center justify-between pt-1 border-t border-slate-800">
+                {popupAlert.estimated_cost ? (
+                  <span className="text-[11px] font-semibold text-amber-400">
+                    Est. Cost: ₹{popupAlert.estimated_cost}
+                  </span>
+                ) : (
+                  <span className="text-[11px] text-slate-400">Action recommended</span>
+                )}
+
+                <button
+                  onClick={() => {
+                    const key = (popupAlert.appliance_id || '') + (popupAlert.issue || '') + (popupAlert.timestamp || '');
+                    setDismissedKeys(prev => new Set(prev).add(key));
+                    setPopupAlert(null);
+                    navigate('/alerts');
+                  }}
+                  className="px-3 py-1 rounded-lg text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white flex items-center gap-1 transition-all shadow-md shadow-blue-500/20"
+                >
+                  View in Alert Center <ArrowRight size={12} />
+                </button>
+              </div>
+            </div>
+
+            <button
+              onClick={() => {
+                const key = (popupAlert.appliance_id || '') + (popupAlert.issue || '') + (popupAlert.timestamp || '');
+                setDismissedKeys(prev => new Set(prev).add(key));
+                setPopupAlert(null);
+              }}
+              className="text-slate-500 hover:text-white text-xs p-1 transition-colors"
+            >
+              <X size={16} />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* ── Page header ── */}
-      <div className="flex items-start justify-between mb-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-2">
         <div>
           <p className="text-[10px] font-semibold tracking-widest uppercase mb-1.5" style={{ color: '#334155' }}>Overview</p>
           <h1 className="text-2xl font-bold text-white tracking-tight">Energy Intelligence</h1>
-          <p className="text-[13px] mt-1" style={{ color: '#64748b' }}>Replaying historical REFIT smart-meter measurements.</p>
+          <p className="text-[13px] mt-1" style={{ color: '#64748b' }}>
+            Replaying historical {data?.household?.display_name || 'REFIT'} smart-meter measurements.
+          </p>
         </div>
         <div className="flex items-center gap-2 px-3 py-1.5 rounded-full text-[11px] font-semibold tracking-wide"
           style={{ background: 'rgba(6,182,212,0.08)', border: '1px solid rgba(6,182,212,0.18)', color: '#22d3ee' }}>
           <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 pulse-dot" />
           {data.data_source || data.status}
+        </div>
+      </div>
+
+      {/* ── Timeframe View Selector & Interactive Date/Time Picker Bar ── */}
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 p-4 rounded-2xl bg-slate-900/90 border border-slate-800">
+        
+        {/* Date & Time Picker Inputs */}
+        <form onSubmit={handleApplyCustomDateTime} className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-2">
+            <Calendar size={16} className="text-blue-400 flex-shrink-0" />
+            <span className="text-xs font-semibold text-slate-300">Select Date:</span>
+            <input
+              type="date"
+              value={inputDate}
+              onChange={e => setInputDate(e.target.value)}
+              className="bg-slate-950 border border-slate-700 text-white rounded-xl px-3 py-1.5 text-xs font-semibold focus:outline-none focus:border-blue-500"
+            />
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Clock size={16} className="text-cyan-400 flex-shrink-0" />
+            <span className="text-xs font-semibold text-slate-300">Select Time:</span>
+            <input
+              type="time"
+              value={inputTime}
+              onChange={e => setInputTime(e.target.value)}
+              className="bg-slate-950 border border-slate-700 text-white rounded-xl px-3 py-1.5 text-xs font-semibold focus:outline-none focus:border-cyan-500"
+            />
+          </div>
+
+          <button
+            type="submit"
+            className="px-4 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-all shadow-md shadow-blue-500/20 flex items-center gap-1.5"
+          >
+            Jump to Timestamp
+          </button>
+        </form>
+
+        {/* Quick Timeframe Preset selector buttons */}
+        <div className="flex items-center gap-1.5 p-1 rounded-xl bg-slate-950/90 border border-slate-800/80">
+          <button
+            type="button"
+            onClick={() => handleTimeframeSelect('today')}
+            className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all ${
+              timeframeMode === 'today'
+                ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20'
+                : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            📅 13 Oct 2013 (6 PM)
+          </button>
+
+          <button
+            type="button"
+            onClick={() => handleTimeframeSelect('previous_day')}
+            className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all ${
+              timeframeMode === 'previous_day'
+                ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20'
+                : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            ⏪ Prev Day (12 Oct)
+          </button>
+
+          <button
+            type="button"
+            onClick={() => handleTimeframeSelect('previous_month')}
+            className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all ${
+              timeframeMode === 'previous_month'
+                ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20'
+                : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            🗓️ Prev Month (Sep 2013)
+          </button>
         </div>
       </div>
 
@@ -244,7 +490,7 @@ const Dashboard = () => {
               <div className="flex items-center space-x-2 mb-1">
                 <span className="text-[10px] font-bold uppercase tracking-wider text-blue-400">Historical Replay</span>
                 <span className="text-slate-500 text-[10px]">•</span>
-                <span className="text-[10px] text-slate-400">REFIT House 1</span>
+                <span className="text-[10px] text-slate-400">{data?.household?.display_name || 'REFIT Household'}</span>
               </div>
               <div className="text-lg font-bold text-white tracking-tight mt-0.5">
                 {formatSimTime(currentSimTime || data.simulation_time)}
@@ -266,20 +512,23 @@ const Dashboard = () => {
             </button>
 
             <div className="flex items-center space-x-1 rounded-xl p-1" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
-              {[1, 10, 60, 300].map(s => (
-                <button
-                  key={s}
-                  onClick={() => setSpeed(s)}
-                  className={`px-3 py-1.5 text-[11px] font-semibold rounded-lg transition-all ${
-                    speed === s 
-                      ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' 
-                      : 'text-slate-400 hover:text-white hover:bg-slate-800'
-                  }`}
-                  style={speed !== s ? { border: '1px solid transparent' } : {}}
-                >
-                  {s}x
-                </button>
-              ))}
+              {['8s', 1, 10, 60, 300].map(s => {
+                const isSelected = speed === s || (s === '8s' && speed === 0.133);
+                return (
+                  <button
+                    key={s}
+                    onClick={() => setSpeed(s === '8s' ? 0.133 : s)}
+                    className={`px-3 py-1.5 text-[11px] font-semibold rounded-lg transition-all ${
+                      isSelected 
+                        ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' 
+                        : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                    }`}
+                    style={!isSelected ? { border: '1px solid transparent' } : {}}
+                  >
+                    {s === '8s' ? '8s Live' : `${s}x`}
+                  </button>
+                );
+              })}
             </div>
 
             <button 
@@ -354,6 +603,104 @@ const Dashboard = () => {
         />
       </div>
 
+      {/* ── Historical Comparison & Live Fluctuation Row ── */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+        
+        {/* Live 8-Second Power Fluctuation Stream Chart */}
+        <div className="lg:col-span-2 premium-card p-5">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-[10px] font-semibold tracking-widest uppercase text-cyan-400">REFIT 8-Second Telemetry Stream</span>
+                <span className="px-2 py-0.5 rounded text-[9px] font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping" /> 8s Interval
+                </span>
+              </div>
+              <h2 className="text-[15px] font-semibold text-white">
+                Live Single Day Power Fluctuation ({data.comparisons?.reference_date || '13/10/2013'} @ {data.comparisons?.reference_time || '06:00 PM'})
+              </h2>
+            </div>
+            <span className="badge badge-cyan">Watts / 8s</span>
+          </div>
+
+          <div className="h-56">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={(data.eight_second_telemetry && data.eight_second_telemetry.length > 0) ? data.eight_second_telemetry : (data.minute_trend || [])} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="colorWatts" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#06b6d4" stopOpacity={0.35} />
+                    <stop offset="95%" stopColor="#06b6d4" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(255,255,255,0.04)" />
+                <XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#475569' }} dy={5} />
+                <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#475569' }} />
+                <Tooltip content={<ChartTooltip />} />
+                <Area type="monotone" dataKey="watts" name="Power Draw" stroke="#06b6d4" strokeWidth={2} fill="url(#colorWatts)" dot={false} activeDot={{ r: 4, fill: '#06b6d4', stroke: '#fff' }} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        {/* Historical Date Comparison Card */}
+        <div className="premium-card p-5 flex flex-col justify-between">
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-[10px] font-semibold tracking-widest uppercase text-slate-400">Period Comparison</p>
+              <span className="badge badge-blue">13/10/2014 Context</span>
+            </div>
+            <h2 className="text-[15px] font-semibold text-white mb-4">Today vs Previous Period</h2>
+
+            <div className="space-y-3">
+              {/* Today */}
+              <div className="p-3 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-between">
+                <div>
+                  <p className="text-[11px] font-bold text-blue-300">📅 Today (13 Oct 2014)</p>
+                  <p className="text-[13px] font-bold text-white mt-0.5">{data.comparisons?.today?.energy_kwh || data.today_energy} kWh</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-xs font-bold text-amber-400">₹{data.comparisons?.today?.cost || data.estimated_cost}</p>
+                  <span className="text-[10px] text-slate-400">Reference Day</span>
+                </div>
+              </div>
+
+              {/* Previous Day */}
+              <div className="p-3 rounded-xl bg-slate-900/80 border border-slate-800 flex items-center justify-between">
+                <div>
+                  <p className="text-[11px] font-semibold text-slate-400">⏪ Previous Day (12 Oct 2014)</p>
+                  <p className="text-[13px] font-bold text-white mt-0.5">{data.comparisons?.previous_day?.energy_kwh} kWh</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-xs font-bold text-amber-400">₹{data.comparisons?.previous_day?.cost}</p>
+                  <span className={`text-[10px] font-bold ${
+                    (data.comparisons?.previous_day?.variance_pct || 0) <= 0 ? 'text-emerald-400' : 'text-red-400'
+                  }`}>
+                    {data.comparisons?.previous_day?.variance_pct}% vs today
+                  </span>
+                </div>
+              </div>
+
+              {/* Previous Month */}
+              <div className="p-3 rounded-xl bg-slate-900/80 border border-slate-800 flex items-center justify-between">
+                <div>
+                  <p className="text-[11px] font-semibold text-slate-400">🗓️ Previous Month (Sep 2014)</p>
+                  <p className="text-[13px] font-bold text-white mt-0.5">{data.comparisons?.previous_month?.energy_kwh} kWh</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-xs font-bold text-amber-400">₹{data.comparisons?.previous_month?.cost}</p>
+                  <span className={`text-[10px] font-bold ${
+                    (data.comparisons?.previous_month?.variance_pct || 0) <= 0 ? 'text-emerald-400' : 'text-red-400'
+                  }`}>
+                    {data.comparisons?.previous_month?.variance_pct}% vs month
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
       {/* ── Charts row ── */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
 
@@ -362,7 +709,7 @@ const Dashboard = () => {
           <div className="flex items-center justify-between mb-5">
             <div>
               <p className="text-[10px] font-semibold tracking-widest uppercase mb-1" style={{ color: '#334155' }}>Consumption</p>
-              <h2 className="text-[15px] font-semibold text-white">24-Hour Energy Profile</h2>
+              <h2 className="text-[15px] font-semibold text-white">24-Hour Energy Profile ({data.comparisons?.reference_date || '13/10/2014'})</h2>
             </div>
             <span className="badge badge-blue">kWh / hr</span>
           </div>
@@ -446,6 +793,76 @@ const Dashboard = () => {
           )}
         </div>
       </div>
+
+      {/* ── ToD (Time of Day) KSEB Tariff Analysis ── */}
+      {data.tod_analysis && (
+        <div className="premium-card p-5 mt-5">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <p className="text-[10px] font-semibold tracking-widest uppercase mb-1" style={{ color: '#334155' }}>Tariff Breakdown</p>
+              <h2 className="text-[15px] font-semibold text-white">Time-of-Day (ToD) Cost Analysis</h2>
+              <p className="text-[12px] mt-0.5" style={{ color: '#64748b' }}>Based on KSEB ToD tariff slots (Day: -10%, Peak: +25%)</p>
+            </div>
+            <span className="badge badge-purple">ToD Active</span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* Day Slot */}
+            <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20">
+              <div className="flex items-center gap-2 mb-2">
+                <div className="w-2 h-2 rounded-full bg-emerald-400" />
+                <span className="text-[12px] font-semibold text-emerald-300 uppercase tracking-widest">Day (06:00 - 18:00)</span>
+              </div>
+              <div className="flex items-baseline justify-between">
+                <div>
+                  <p className="text-2xl font-bold text-white">{data.tod_analysis.day?.kwh}</p>
+                  <p className="text-[11px] text-slate-400">kWh Consumed</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-lg font-bold text-emerald-400">₹{data.tod_analysis.day?.cost}</p>
+                  <p className="text-[10px] text-slate-400">@ ₹{data.tod_analysis.day?.rate}/unit</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Peak Slot */}
+            <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/20">
+              <div className="flex items-center gap-2 mb-2">
+                <div className="w-2 h-2 rounded-full bg-rose-400" />
+                <span className="text-[12px] font-semibold text-rose-300 uppercase tracking-widest">Peak (18:00 - 22:00)</span>
+              </div>
+              <div className="flex items-baseline justify-between">
+                <div>
+                  <p className="text-2xl font-bold text-white">{data.tod_analysis.peak?.kwh}</p>
+                  <p className="text-[11px] text-slate-400">kWh Consumed</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-lg font-bold text-rose-400">₹{data.tod_analysis.peak?.cost}</p>
+                  <p className="text-[10px] text-slate-400">@ ₹{data.tod_analysis.peak?.rate}/unit</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Night Slot */}
+            <div className="p-4 rounded-xl bg-blue-500/10 border border-blue-500/20">
+              <div className="flex items-center gap-2 mb-2">
+                <div className="w-2 h-2 rounded-full bg-blue-400" />
+                <span className="text-[12px] font-semibold text-blue-300 uppercase tracking-widest">Night (22:00 - 06:00)</span>
+              </div>
+              <div className="flex items-baseline justify-between">
+                <div>
+                  <p className="text-2xl font-bold text-white">{data.tod_analysis.night?.kwh}</p>
+                  <p className="text-[11px] text-slate-400">kWh Consumed</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-lg font-bold text-blue-400">₹{data.tod_analysis.night?.cost}</p>
+                  <p className="text-[10px] text-slate-400">@ ₹{data.tod_analysis.night?.rate}/unit</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── AI Insight card ── */}
       <div className="premium-card ai-border p-5 flex items-start gap-4">

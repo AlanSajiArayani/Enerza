@@ -34,6 +34,37 @@ def create_or_update_user_profile(sender, instance, created, **kwargs):
                 instance.profile.role = 'admin'
                 instance.profile.save()
 
+class REFITHousehold(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='refit_household')
+    house_number = models.IntegerField(unique=True)
+    display_name = models.CharField(max_length=100)
+    data_file = models.CharField(max_length=255)
+    data_source = models.CharField(max_length=50, default='refit')
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.display_name} (House {self.house_number}) -> {self.user.username}"
+
+
+class ApplianceControlSetting(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='appliance_settings')
+    appliance_id = models.CharField(max_length=100)
+    power_state = models.BooleanField(default=True)
+    auto_turn_off_enabled = models.BooleanField(default=False)
+    usage_limit_watts = models.FloatField(default=2000.0, blank=True, null=True)
+    usage_limit_kwh = models.FloatField(default=5.0, blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ('user', 'appliance_id')
+
+    def __str__(self):
+        return f"{self.user.username} - {self.appliance_id} (ON={self.power_state}, Limit={self.usage_limit_watts}W)"
+
+
 class UserAppliance(models.Model):
     POWER_CATEGORY_CHOICES = (
         ('low', 'Low Power'),
@@ -50,18 +81,13 @@ class UserAppliance(models.Model):
     iot_enabled = models.BooleanField(default=False)
     iot_device_name = models.CharField(max_length=100, blank=True, null=True)
     iot_status = models.CharField(max_length=50, default='Not Connected')
+    power_state = models.BooleanField(default=True)
+    auto_turn_off_enabled = models.BooleanField(default=False)
+    usage_limit_watts = models.FloatField(default=2000.0, blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
-    def save(self, *args, **kwargs):
-        if self.rated_power_watts < 300:
-            self.power_category = 'low'
-        elif self.rated_power_watts <= 1000:
-            self.power_category = 'moderate'
-        else:
-            self.power_category = 'high'
-        super().save(*args, **kwargs)
-
     def __str__(self):
-        return f"{self.name} ({self.user.username})"
+        return f"{self.user.username} - {self.name} ({self.rated_power_watts}W)"
+
 

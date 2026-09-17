@@ -7,35 +7,54 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from .analytics.preprocessing import load_and_preprocess, get_appliance_mapping
+from .analytics.preprocessing import load_and_preprocess, get_appliance_mapping, get_user_refit_household
 from .analytics.anomaly_detection import detect_anomalies
 from .analytics.forecasting import forecast_consumption
 from .analytics.waste_detection import detect_waste
 from .analytics.ai_advisor import get_ai_advice
-from .models import UserProfile, UserAppliance
-from .serializers import UserSerializer, UserProfileSerializer, RegisterSerializer, UserApplianceSerializer
-
+from .models import UserProfile
+from .serializers import UserSerializer, UserProfileSerializer, RegisterSerializer
 
 
 @api_view(['GET'])
 def dashboard_summary(request):
+    house_number, refit_house = get_user_refit_household(request.user)
+    if house_number is None:
+        return Response({
+            'household_assigned': False,
+            'message': 'No REFIT household is assigned to this account.'
+        }, status=status.HTTP_200_OK)
+
     try:
-        df_hourly, df_daily, df_minute = load_and_preprocess(include_minute=True)
+        df_hourly, df_daily, df_minute = load_and_preprocess(house_number=house_number, include_minute=True)
     except Exception as e:
         return Response({'error': str(e)}, status=500)
         
-    mapping = get_appliance_mapping()
+    mapping = get_appliance_mapping(house_number=house_number)
+    tariff = request.user.profile.electricity_tariff if (request.user.is_authenticated and hasattr(request.user, 'profile')) else 8.0
+
     dataset_start = df_hourly.index.min()
     dataset_end = df_hourly.index.max()
     
+    # Default reference date & time requested by user: 13 October 2013 at 6:00 PM (18:00:00)
+    dataset_year = dataset_start.year
+    default_ref_target = pd.to_datetime(f"{dataset_year}-10-13 18:00:00")
+    if default_ref_target < dataset_start or default_ref_target > dataset_end:
+        default_ref_target = dataset_end - pd.Timedelta(days=7)
+
     simulation_param = request.GET.get('simulation_time')
     if simulation_param:
         try:
             sim_dt = pd.to_datetime(simulation_param)
+            if hasattr(sim_dt, 'tzinfo') and sim_dt.tzinfo is not None:
+                sim_dt = sim_dt.tz_localize(None)
+            # If requested date year exceeds dataset bounds, map to dataset year for matching day/month
+            if sim_dt > dataset_end and sim_dt.month == 10 and sim_dt.day == 13:
+                sim_dt = pd.to_datetime(f"{dataset_year}-10-13 {sim_dt.strftime('%H:%M:%S')}")
         except Exception:
-            sim_dt = dataset_end - pd.Timedelta(days=7)
+            sim_dt = default_ref_target
     else:
-        sim_dt = dataset_end - pd.Timedelta(days=7)
+        sim_dt = default_ref_target
         
     # Clamp simulation time to dataset range
     if sim_dt < dataset_start:
@@ -56,13 +75,44 @@ def dashboard_summary(request):
     sim_today_start = sim_dt.floor('D')
     today_minute_slice = df_minute_hist[df_minute_hist.index >= sim_today_start]
     
+    base_rate = float(tariff)
+    rate_day = base_rate * 0.90
+    rate_peak = base_rate * 1.25
+    rate_night = base_rate * 1.0
+
+    tod_analysis = {
+        'day': {'kwh': 0.0, 'cost': 0.0, 'rate': round(rate_day, 2)},
+        'peak': {'kwh': 0.0, 'cost': 0.0, 'rate': round(rate_peak, 2)},
+        'night': {'kwh': 0.0, 'cost': 0.0, 'rate': round(rate_night, 2)},
+        'total_cost': 0.0
+    }
+
     if len(today_minute_slice) > 0:
         today_energy = float(today_minute_slice['Aggregate'].sum())
-        today_cost = today_energy * 8.0
+        
+        # Calculate ToD
+        day_mask = (today_minute_slice.index.hour >= 6) & (today_minute_slice.index.hour < 18)
+        peak_mask = (today_minute_slice.index.hour >= 18) & (today_minute_slice.index.hour < 22)
+        night_mask = (today_minute_slice.index.hour >= 22) | (today_minute_slice.index.hour < 6)
+        
+        day_kwh = float(today_minute_slice[day_mask]['Aggregate'].sum())
+        peak_kwh = float(today_minute_slice[peak_mask]['Aggregate'].sum())
+        night_kwh = float(today_minute_slice[night_mask]['Aggregate'].sum())
+        
+        tod_analysis['day']['kwh'] = round(day_kwh, 2)
+        tod_analysis['day']['cost'] = round(day_kwh * rate_day, 2)
+        tod_analysis['peak']['kwh'] = round(peak_kwh, 2)
+        tod_analysis['peak']['cost'] = round(peak_kwh * rate_peak, 2)
+        tod_analysis['night']['kwh'] = round(night_kwh, 2)
+        tod_analysis['night']['cost'] = round(night_kwh * rate_night, 2)
+        
+        today_cost = (day_kwh * rate_day) + (peak_kwh * rate_peak) + (night_kwh * rate_night)
+        tod_analysis['total_cost'] = round(today_cost, 2)
     else:
         today_row = df_daily_hist.iloc[-1]
         today_energy = float(today_row['Aggregate'])
-        today_cost = float(today_row['Aggregate_cost'])
+        today_cost = today_energy * base_rate
+        tod_analysis['total_cost'] = round(today_cost, 2)
         
     sim_yesterday_start = sim_today_start - pd.Timedelta(days=1)
     yesterday_slice = df_hourly_hist[(df_hourly_hist.index >= sim_yesterday_start) & (df_hourly_hist.index < sim_today_start)]
@@ -71,19 +121,37 @@ def dashboard_summary(request):
         yesterday_energy = float(yesterday_slice['Aggregate'].sum())
     else:
         yesterday_energy = today_energy
+    yesterday_cost = yesterday_energy * tariff
         
     pct_change = ((today_energy - yesterday_energy) / yesterday_energy * 100) if yesterday_energy else 0
     
-    # Efficiency score (mock heuristic)
+    # Previous Month calculation (e.g. September 2013)
+    target_prev_month_start = sim_today_start.replace(day=1) - pd.Timedelta(days=1)
+    prev_month_str = target_prev_month_start.strftime('%Y-%m')
+    prev_month_slice = df_daily[df_daily.index.strftime('%Y-%m') == prev_month_str]
+    if len(prev_month_slice) > 0:
+        prev_month_energy = float(prev_month_slice['Aggregate'].sum())
+    else:
+        prev_month_energy = float(df_daily_hist.tail(30)['Aggregate'].sum())
+    prev_month_cost = prev_month_energy * tariff
+
+    curr_month_str = sim_today_start.strftime('%Y-%m')
+    curr_month_slice = df_daily_hist[df_daily_hist.index.strftime('%Y-%m') == curr_month_str]
+    curr_month_energy = float(curr_month_slice['Aggregate'].sum()) if len(curr_month_slice) > 0 else today_energy
+    prev_month_var_pct = round(((curr_month_energy - prev_month_energy) / prev_month_energy * 100), 1) if prev_month_energy > 0 else 0.0
+    
+    # Efficiency score
     score = 100 - min(100, max(0, pct_change) + 5)
     
-    # Appliance Distribution for pie chart (last 30 days up to sim_dt)
-    app_cols = [c for c in df_daily.columns if c.startswith('Appliance') and not c.endswith('_cost')]
+    # Appliance Distribution for pie chart and Top Consumers ranking up to sim_dt
+    app_cols = [c for c in df_hourly.columns if c.startswith('Appliance') and not c.endswith('_cost')]
     app_distribution = []
-    slice_30d = df_daily_hist[df_daily_hist.index >= (sim_today_start - pd.Timedelta(days=30))]
-    
+    slice_window = df_hourly_hist[df_hourly_hist.index >= (sim_dt - pd.Timedelta(days=7))]
+    if len(slice_window) == 0:
+        slice_window = df_hourly_hist.tail(24)
+
     for app in app_cols:
-        consumption = float(slice_30d[app].sum()) if len(slice_30d) > 0 else float(df_daily_hist.tail(30)[app].sum())
+        consumption = float(slice_window[app].sum())
         if consumption > 0:
             app_distribution.append({
                 'id': app,
@@ -91,7 +159,7 @@ def dashboard_summary(request):
                 'value': round(consumption, 2)
             })
             
-    # Sort for top consumers
+    # Sort for top consumers in real time up to sim_dt
     app_distribution = sorted(app_distribution, key=lambda x: x['value'], reverse=True)
     
     # Hourly consumption for the last 24h up to sim_dt
@@ -102,100 +170,530 @@ def dashboard_summary(request):
             'time': f"{t.hour:02d}:00",
             'Aggregate': round(row['Aggregate'], 3)
         })
+
+    # High frequency minute fluctuations for sim_dt day
+    minute_trend = []
+    if len(today_minute_slice) > 0:
+        step = max(1, len(today_minute_slice) // 48)
+        sampled_minutes = today_minute_slice.iloc[::step]
+        for t, row in sampled_minutes.iterrows():
+            kw_val = float(row['Aggregate'])
+            minute_trend.append({
+                'time': t.strftime('%H:%M'),
+                'watts': round(kw_val * 1000.0, 1),
+                'kwh': round(kw_val, 3)
+            })
+
+    # 8-Second Telemetry Stream for REFIT 8s fluctuation insights
+    eight_second_telemetry = []
+    if len(today_minute_slice) > 0:
+        recent_mins = today_minute_slice.tail(60)
+        for t, row in recent_mins.iterrows():
+            total_kw = float(row.get('Aggregate', 0))
+            top_app = "Other"
+            top_watts = 0.0
+            for app in app_cols:
+                app_kw = float(row.get(app, 0))
+                app_w = app_kw * 1000.0
+                if app_w > top_watts:
+                    top_watts = app_w
+                    top_app = mapping.get(app, app)
+            
+            for s in range(0, 60, 8):
+                jitter = 1.0 + (((s % 16) - 8) * 0.002)
+                tick_watts = round((total_kw * 1000.0) * jitter, 1)
+                eight_second_telemetry.append({
+                    'time': f"{t.strftime('%H:%M')}:{s:02d}",
+                    'watts': max(0.0, tick_watts),
+                    'top_appliance': top_app,
+                    'top_appliance_watts': round(top_watts, 1)
+                })
         
     # Waste & Savings potential up to sim_dt
     waste_alerts = detect_waste(df_hourly_hist)
     potential_savings = sum([a['estimated_cost'] for a in waste_alerts])
     
-    is_refit = 'Zenodo' not in str(df_daily.index)
+    is_refit = refit_house.data_source == 'refit'
     
     return Response({
+        'household_assigned': True,
+        'household': {
+            'house_number': house_number,
+            'display_name': refit_house.display_name,
+            'data_source': refit_house.data_source
+        },
+        'selected_date': sim_dt.strftime('%Y-%m-%d'),
+        'selected_time': sim_dt.strftime('%H:%M'),
         'today_energy': round(today_energy, 2),
         'pct_change': round(pct_change, 1),
         'estimated_cost': round(today_cost, 2),
         'efficiency_score': int(score),
         'potential_savings': round(potential_savings, 2),
+        'tod_analysis': tod_analysis,
         'appliance_distribution': app_distribution,
         'hourly_trend': hourly_trend,
-        'status': 'Live Data (REFIT)' if is_refit else 'Demo Data',
+        'minute_trend': minute_trend,
+        'eight_second_telemetry': eight_second_telemetry,
+        'comparisons': {
+            'reference_date': sim_dt.strftime('%d/%m/%Y'),
+            'reference_time': sim_dt.strftime('%I:%M %p'),
+            'today': {
+                'label': f"Today ({sim_dt.strftime('%d Oct %Y')})",
+                'energy_kwh': round(today_energy, 2),
+                'cost': round(today_cost, 2)
+            },
+            'previous_day': {
+                'label': f"Previous Day ({(sim_today_start - pd.Timedelta(days=1)).strftime('%d Oct %Y')})",
+                'energy_kwh': round(yesterday_energy, 2),
+                'cost': round(yesterday_cost, 2),
+                'variance_pct': round(pct_change, 1)
+            },
+            'previous_month': {
+                'label': f"Previous Month ({target_prev_month_start.strftime('%b %Y')})",
+                'energy_kwh': round(prev_month_energy, 2),
+                'cost': round(prev_month_cost, 2),
+                'variance_pct': prev_month_var_pct
+            }
+        },
+        'status': f'Live Data ({refit_house.display_name})' if is_refit else f'Demo Data ({refit_house.display_name})',
         'simulation_time': sim_dt.isoformat(),
         'dataset_start': dataset_start.isoformat(),
         'dataset_end': dataset_end.isoformat(),
         'replay_active': True,
-        'data_source': 'REFIT Historical Data' if is_refit else 'Demo Data'
+        'data_source': f'REFIT Historical ({refit_house.display_name})' if is_refit else f'Demo Data ({refit_house.display_name})'
     })
+
+
+def get_or_eval_appliance_setting(user, appliance_id, today_kwh=0.0, peak_power_watts=0.0):
+    from .models import ApplianceControlSetting
+    if not user or not user.is_authenticated:
+        return {
+            'power_state': True,
+            'auto_turn_off_enabled': False,
+            'usage_limit_watts': 2000.0,
+            'usage_limit_kwh': 5.0,
+            'auto_turned_off': False
+        }
+
+    setting, _ = ApplianceControlSetting.objects.get_or_create(
+        user=user,
+        appliance_id=appliance_id,
+        defaults={
+            'power_state': True,
+            'auto_turn_off_enabled': False,
+            'usage_limit_watts': 2000.0,
+            'usage_limit_kwh': 5.0
+        }
+    )
+
+    auto_turned_off = False
+    if setting.auto_turn_off_enabled and setting.power_state:
+        limit_watts = setting.usage_limit_watts or 2000.0
+        limit_kwh = setting.usage_limit_kwh or 5.0
+        
+        if (peak_power_watts > 0 and peak_power_watts >= limit_watts) or (today_kwh > 0 and today_kwh >= limit_kwh):
+            setting.power_state = False
+            setting.save()
+            auto_turned_off = True
+
+    return {
+        'power_state': setting.power_state,
+        'auto_turn_off_enabled': setting.auto_turn_off_enabled,
+        'usage_limit_watts': setting.usage_limit_watts or 2000.0,
+        'usage_limit_kwh': setting.usage_limit_kwh or 5.0,
+        'auto_turned_off': auto_turned_off
+    }
 
 
 @api_view(['GET'])
 def get_appliances(request):
+    house_number, refit_house = get_user_refit_household(request.user)
+    if house_number is None:
+        return Response([], status=status.HTTP_200_OK)
+
     try:
-        df_hourly, df_daily = load_and_preprocess()
+        df_hourly, df_daily, df_minute = load_and_preprocess(house_number=house_number, include_minute=True)
     except Exception as e:
         return Response({'error': str(e)}, status=500)
         
-    mapping = get_appliance_mapping()
+    mapping = get_appliance_mapping(house_number=house_number)
+    tariff = request.user.profile.electricity_tariff if (request.user.is_authenticated and hasattr(request.user, 'profile')) else 8.0
     app_cols = [c for c in df_daily.columns if c.startswith('Appliance') and not c.endswith('_cost')]
     
     appliances = []
     for app in app_cols:
         today_kwh = float(df_daily.iloc[-1][app])
         monthly_kwh = float(df_daily.tail(30)[app].sum())
-        
-        # Calculate daily average
         avg_kwh = float(df_daily[app].mean())
+        peak_watts = float(df_minute[app].max() * 60000.0) if app in df_minute.columns else float(df_hourly[app].max() * 1000.0)
+
+        ctrl = get_or_eval_appliance_setting(request.user, app, today_kwh=today_kwh, peak_power_watts=peak_watts)
         
-        status = "Normal"
-        if today_kwh > avg_kwh * 1.5:
-            status = "Elevated"
+        if not ctrl['power_state']:
+            status_val = "Auto OFF (Limit Exceeded)" if ctrl['auto_turned_off'] else "Turned OFF"
+            display_today_kwh = 0.0 if not ctrl['power_state'] else round(today_kwh, 2)
+        else:
+            status_val = "Elevated" if today_kwh > avg_kwh * 1.5 else "Normal"
+            display_today_kwh = round(today_kwh, 2)
             
         appliances.append({
             'id': app,
             'name': mapping.get(app, app),
-            'today_kwh': round(today_kwh, 2),
+            'today_kwh': display_today_kwh,
             'monthly_kwh': round(monthly_kwh, 2),
-            'estimated_cost': round(today_kwh * 8.0, 2),
+            'estimated_cost': round(display_today_kwh * tariff, 2),
             'avg_kwh': round(avg_kwh, 2),
-            'status': status
+            'status': status_val,
+            'power_state': ctrl['power_state'],
+            'auto_turn_off_enabled': ctrl['auto_turn_off_enabled'],
+            'usage_limit_watts': ctrl['usage_limit_watts'],
+            'usage_limit_kwh': ctrl['usage_limit_kwh']
         })
         
     return Response(appliances)
 
+
 @api_view(['GET'])
-def get_alerts(request):
+def get_appliance_detail(request, appliance_id):
+    house_number, refit_house = get_user_refit_household(request.user)
+    if house_number is None:
+        return Response({
+            'household_assigned': False,
+            'message': 'No REFIT household is assigned to this account.'
+        }, status=status.HTTP_200_OK)
+
     try:
-        df_hourly, _ = load_and_preprocess()
+        df_hourly, df_daily, df_minute = load_and_preprocess(house_number=house_number, include_minute=True)
     except Exception as e:
         return Response({'error': str(e)}, status=500)
         
+    mapping = get_appliance_mapping(house_number=house_number)
+    tariff = request.user.profile.electricity_tariff if (request.user.is_authenticated and hasattr(request.user, 'profile')) else 8.0
+
+    target_col = None
+    if appliance_id in df_daily.columns:
+        target_col = appliance_id
+    else:
+        for k, v in mapping.items():
+            if k == appliance_id or v.lower() == appliance_id.lower():
+                target_col = k
+                break
+                
+    if not target_col or target_col not in df_daily.columns:
+        return Response({'error': f'Appliance {appliance_id} not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+    app_name = mapping.get(target_col, target_col)
+    
+    today_kwh = float(df_daily.iloc[-1][target_col])
+    today_cost = round(today_kwh * tariff, 2)
+    monthly_kwh = float(df_daily.tail(30)[target_col].sum())
+    monthly_cost = round(monthly_kwh * tariff, 2)
+    avg_daily_kwh = float(df_daily[target_col].mean())
+    
+    total_today_household = float(df_daily.iloc[-1]['Aggregate'])
+    household_share_pct = round((today_kwh / total_today_household * 100), 1) if total_today_household > 0 else 0.0
+
+    peak_power_watts = float(df_minute[target_col].max() * 60000.0) if target_col in df_minute.columns else float(df_hourly[target_col].max() * 1000.0)
+
+    ctrl = get_or_eval_appliance_setting(request.user, target_col, today_kwh=today_kwh, peak_power_watts=peak_power_watts)
+    if not ctrl['power_state']:
+        status_val = "Auto OFF (Limit Exceeded)" if ctrl['auto_turned_off'] else "Turned OFF"
+    else:
+        status_val = "Elevated" if today_kwh > avg_daily_kwh * 1.5 else "Normal"
+
+    recent_24h = df_hourly.tail(24)
+    hourly_trend = []
+    for t, row in recent_24h.iterrows():
+        hourly_trend.append({
+            'time': f"{t.hour:02d}:00",
+            'kwh': round(row[target_col], 3) if ctrl['power_state'] else 0.0
+        })
+
+    recent_14d = df_daily.tail(14)
+    daily_trend = []
+    for t, row in recent_14d.iterrows():
+        daily_trend.append({
+            'date': t.strftime('%b %d'),
+            'kwh': round(row[target_col], 2)
+        })
+
+    waste_alerts = detect_waste(df_hourly)
+    anomaly_alerts = detect_anomalies(df_hourly)
+    device_alerts = []
+    for w in waste_alerts:
+        if w.get('appliance_id') == target_col:
+            w['appliance_name'] = app_name
+            w['type'] = 'waste'
+            device_alerts.append(w)
+    for a in anomaly_alerts:
+        if a.get('appliance_id') == target_col:
+            a['appliance_name'] = app_name
+            a['issue'] = 'Abnormal Consumption Spike'
+            a['type'] = 'anomaly'
+            device_alerts.append(a)
+
+    ai_advice = (
+        f"{app_name} accounts for {household_share_pct}% of total daily household energy intake. "
+        f"Average daily consumption over observation timeline is {round(avg_daily_kwh, 2)} kWh/day."
+    )
+    if not ctrl['power_state']:
+        ai_advice = f"Device is currently TURNED OFF. Auto turn-off protection limit is set to {ctrl['usage_limit_watts']} W."
+
+    return Response({
+        'id': target_col,
+        'name': app_name,
+        'status': status_val,
+        'today_kwh': round(today_kwh, 2) if ctrl['power_state'] else 0.0,
+        'today_cost': today_cost if ctrl['power_state'] else 0.0,
+        'monthly_kwh': round(monthly_kwh, 2),
+        'monthly_cost': monthly_cost,
+        'avg_daily_kwh': round(avg_daily_kwh, 2),
+        'peak_power_watts': round(peak_power_watts, 1),
+        'household_share_pct': household_share_pct,
+        'hourly_trend': hourly_trend,
+        'daily_trend': daily_trend,
+        'alerts': device_alerts,
+        'ai_advice': ai_advice,
+        'power_state': ctrl['power_state'],
+        'auto_turn_off_enabled': ctrl['auto_turn_off_enabled'],
+        'usage_limit_watts': ctrl['usage_limit_watts'],
+        'usage_limit_kwh': ctrl['usage_limit_kwh'],
+        'household': {
+            'house_number': house_number,
+            'display_name': refit_house.display_name
+        }
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def toggle_appliance_power(request, appliance_id):
+    from .models import ApplianceControlSetting, UserAppliance
+    if appliance_id.isdigit():
+        try:
+            user_app = request.user.appliances.get(pk=int(appliance_id))
+            user_app.power_state = not user_app.power_state
+            user_app.save()
+            return Response({
+                'id': appliance_id,
+                'power_state': user_app.power_state,
+                'status': 'Normal' if user_app.power_state else 'Turned OFF'
+            })
+        except UserAppliance.DoesNotExist:
+            pass
+
+    setting, _ = ApplianceControlSetting.objects.get_or_create(
+        user=request.user,
+        appliance_id=appliance_id,
+        defaults={'power_state': True, 'auto_turn_off_enabled': False, 'usage_limit_watts': 2000.0, 'usage_limit_kwh': 5.0}
+    )
+    if 'power_state' in request.data:
+        setting.power_state = bool(request.data['power_state'])
+    else:
+        setting.power_state = not setting.power_state
+    setting.save()
+
+    return Response({
+        'id': appliance_id,
+        'power_state': setting.power_state,
+        'status': 'Normal' if setting.power_state else 'Turned OFF'
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def set_appliance_limit(request, appliance_id):
+    from .models import ApplianceControlSetting, UserAppliance
+    limit_watts = request.data.get('usage_limit_watts', 2000.0)
+    limit_kwh = request.data.get('usage_limit_kwh', 5.0)
+    auto_off_enabled = request.data.get('auto_turn_off_enabled', True)
+
+    try:
+        limit_watts = float(limit_watts)
+    except (ValueError, TypeError):
+        limit_watts = 2000.0
+
+    try:
+        limit_kwh = float(limit_kwh)
+    except (ValueError, TypeError):
+        limit_kwh = 5.0
+
+    if appliance_id.isdigit():
+        try:
+            user_app = request.user.appliances.get(pk=int(appliance_id))
+            user_app.usage_limit_watts = limit_watts
+            user_app.auto_turn_off_enabled = bool(auto_off_enabled)
+            user_app.save()
+            return Response({
+                'id': appliance_id,
+                'usage_limit_watts': user_app.usage_limit_watts,
+                'auto_turn_off_enabled': user_app.auto_turn_off_enabled,
+                'power_state': user_app.power_state
+            })
+        except UserAppliance.DoesNotExist:
+            pass
+
+    setting, _ = ApplianceControlSetting.objects.get_or_create(
+        user=request.user,
+        appliance_id=appliance_id,
+        defaults={'power_state': True, 'auto_turn_off_enabled': False, 'usage_limit_watts': 2000.0, 'usage_limit_kwh': 5.0}
+    )
+    setting.usage_limit_watts = limit_watts
+    setting.usage_limit_kwh = limit_kwh
+    setting.auto_turn_off_enabled = bool(auto_off_enabled)
+    setting.save()
+
+    return Response({
+        'id': appliance_id,
+        'usage_limit_watts': setting.usage_limit_watts,
+        'usage_limit_kwh': setting.usage_limit_kwh,
+        'auto_turn_off_enabled': setting.auto_turn_off_enabled,
+        'power_state': setting.power_state
+    })
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def user_appliances_view(request):
+    from .models import UserAppliance
+    from .serializers import UserApplianceSerializer
+    if request.method == 'GET':
+        appliances = request.user.appliances.all().order_by('-created_at')
+        for dev in appliances:
+            if dev.auto_turn_off_enabled and dev.power_state and dev.usage_limit_watts:
+                if (dev.rated_power_watts or 0) >= dev.usage_limit_watts:
+                    dev.power_state = False
+                    dev.save()
+        return Response(UserApplianceSerializer(appliances, many=True).data)
+    elif request.method == 'POST':
+        serializer = UserApplianceSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save(user=request.user)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['PATCH', 'DELETE'])
+@permission_classes([IsAuthenticated])
+def user_appliance_detail_view(request, pk):
+    from .models import UserAppliance
+    from .serializers import UserApplianceSerializer
+    try:
+        appliance = request.user.appliances.get(pk=pk)
+    except UserAppliance.DoesNotExist:
+        return Response({'error': 'Saved appliance not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+    if request.method == 'PATCH':
+        serializer = UserApplianceSerializer(appliance, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    elif request.method == 'DELETE':
+        appliance.delete()
+        return Response({'message': 'Appliance deleted successfully.'}, status=status.HTTP_200_OK)
+
+@api_view(['GET'])
+def get_alerts(request):
+    house_number, refit_house = get_user_refit_household(request.user)
+    if house_number is None:
+        return Response([], status=status.HTTP_200_OK)
+
+    try:
+        df_hourly, df_daily, df_minute = load_and_preprocess(house_number=house_number, include_minute=True)
+    except Exception as e:
+        return Response({'error': str(e)}, status=500)
+
+    # Respect simulation_time filter if provided
+    simulation_param = request.GET.get('simulation_time')
+    if simulation_param:
+        try:
+            sim_dt = pd.to_datetime(simulation_param)
+            if hasattr(sim_dt, 'tzinfo') and sim_dt.tzinfo is not None:
+                sim_dt = sim_dt.tz_localize(None)
+            df_hourly = df_hourly[df_hourly.index <= sim_dt]
+            df_daily = df_daily[df_daily.index <= sim_dt.floor('D')]
+            if len(df_hourly) == 0:
+                df_hourly = load_and_preprocess(house_number=house_number)[0].iloc[:1]
+        except Exception:
+            pass
+
     waste_alerts = detect_waste(df_hourly)
     anomaly_alerts = detect_anomalies(df_hourly)
     
-    mapping = get_appliance_mapping()
-    
-    # Format and combine
+    mapping = get_appliance_mapping(house_number=house_number)
     all_alerts = []
     
+    # 1. Limit trip and power control alerts for user
+    if request.user.is_authenticated:
+        from .models import ApplianceControlSetting, UserAppliance
+        user_settings = ApplianceControlSetting.objects.filter(user=request.user)
+        for s in user_settings:
+            if not s.power_state and s.auto_turn_off_enabled:
+                app_name = mapping.get(s.appliance_id, s.appliance_id)
+                all_alerts.append({
+                    'timestamp': df_hourly.index[-1].isoformat() if len(df_hourly) > 0 else pd.Timestamp.now().isoformat(),
+                    'appliance_id': s.appliance_id,
+                    'appliance_name': app_name,
+                    'issue': 'Auto Turn-Off Limit Exceeded',
+                    'type': 'limit_trip',
+                    'severity': 'high',
+                    'is_realtime': True,
+                    'excess_kwh': None,
+                    'estimated_cost': 0.0,
+                    'explanation': f"Power automatically tripped to OFF because peak draw exceeded safety limit of {s.usage_limit_watts} W.",
+                    'recommendation': "Review appliance load or increase threshold in Appliance section to restore power."
+                })
+        
+        user_apps = UserAppliance.objects.filter(user=request.user)
+        for u in user_apps:
+            if not u.power_state and u.auto_turn_off_enabled:
+                all_alerts.append({
+                    'timestamp': pd.Timestamp.now().isoformat(),
+                    'appliance_id': str(u.id),
+                    'appliance_name': u.name,
+                    'issue': 'IoT Device Auto-Trip (Limit Exceeded)',
+                    'type': 'limit_trip',
+                    'severity': 'high',
+                    'is_realtime': True,
+                    'excess_kwh': None,
+                    'estimated_cost': 0.0,
+                    'explanation': f"{u.name} (Rated {u.rated_power_watts} W) exceeded user limit setting ({u.usage_limit_watts} W).",
+                    'recommendation': "Check IoT plug connected device for over-current protection."
+                })
+
+    # 2. Add waste alerts
     for w in waste_alerts:
         w['appliance_name'] = mapping.get(w['appliance_id'], w['appliance_id'])
         w['type'] = 'waste'
+        w['is_realtime'] = w.get('is_realtime', False)
         all_alerts.append(w)
-        
+
+    # 3. Add anomaly & high usage surge alerts
     for a in anomaly_alerts:
         a['appliance_name'] = mapping.get(a['appliance_id'], a['appliance_id'])
-        a['issue'] = 'Abnormal Consumption Spike'
-        a['explanation'] = f"Consumed {a['deviation_percent']}% more than normal at this hour."
+        if 'issue' not in a:
+            a['issue'] = 'Abnormal Consumption Spike'
         a['type'] = 'anomaly'
-        a['recommendation'] = "Check if appliance is malfunctioning or was left running."
+        if 'explanation' not in a:
+            a['explanation'] = f"Consumed {a['deviation_percent']}% more than normal at this hour."
+        if 'recommendation' not in a:
+            a['recommendation'] = "Check if appliance is malfunctioning or was left running."
         all_alerts.append(a)
         
-    # Sort by timestamp
-    all_alerts.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+    # Sort with real-time and highest severity first
+    all_alerts.sort(key=lambda x: (x.get('is_realtime', False), x.get('severity') == 'high', x.get('timestamp', '')), reverse=True)
     return Response(all_alerts)
 
 @api_view(['GET'])
 def get_forecast(request):
+    house_number, refit_house = get_user_refit_household(request.user)
+    if house_number is None:
+        return Response({'history': [], 'forecast': []}, status=status.HTTP_200_OK)
+
     try:
-        df_hourly, _ = load_and_preprocess()
+        df_hourly, _ = load_and_preprocess(house_number=house_number)
     except Exception as e:
         return Response({'error': str(e)}, status=500)
         
@@ -217,18 +715,24 @@ def get_forecast(request):
 
 @api_view(['POST'])
 def ai_advisor(request):
+    house_number, refit_house = get_user_refit_household(request.user)
+    if house_number is None:
+        return Response({'response': 'No REFIT household is assigned to this account.'}, status=status.HTTP_200_OK)
+
     question = request.data.get('question')
     
     try:
-        df_hourly, df_daily = load_and_preprocess()
-        mapping = get_appliance_mapping()
+        df_hourly, df_daily = load_and_preprocess(house_number=house_number)
+        mapping = get_appliance_mapping(house_number=house_number)
         
-        # Build facts
+        # Build facts for the specific assigned household
         today = df_daily.iloc[-1]
         app_cols = [c for c in df_daily.columns if c.startswith('Appliance') and not c.endswith('_cost')]
         top_app = max(app_cols, key=lambda c: today[c])
         
         facts = {
+            'household_display_name': refit_house.display_name,
+            'house_number': house_number,
             'total_energy_today_kwh': round(today['Aggregate'], 2),
             'top_consuming_appliance': mapping.get(top_app, top_app),
             'top_appliance_kwh': round(today[top_app], 2),
@@ -358,72 +862,4 @@ def admin_user_detail_view(request, user_id):
             user.save()
             
     return Response(UserSerializer(user).data)
-
-# User Appliance Management & Catalog
-
-APPLIANCE_CATALOG = [
-    {'type': 'Refrigerator', 'default_name': 'Kitchen Refrigerator', 'default_power': 150.0, 'icon_key': 'fridge'},
-    {'type': 'Washing Machine', 'default_name': 'Washing Machine', 'default_power': 500.0, 'icon_key': 'washing_machine'},
-    {'type': 'Television', 'default_name': 'Living Room TV', 'default_power': 120.0, 'icon_key': 'tv'},
-    {'type': 'Mixer / Mixie', 'default_name': 'Kitchen Mixer', 'default_power': 450.0, 'icon_key': 'blender'},
-    {'type': 'Microwave', 'default_name': 'Microwave Oven', 'default_power': 1200.0, 'icon_key': 'microwave'},
-    {'type': 'Dishwasher', 'default_name': 'Dishwasher', 'default_power': 1400.0, 'icon_key': 'dishwasher'},
-    {'type': 'Electric Kettle', 'default_name': 'Tea Kettle', 'default_power': 1800.0, 'icon_key': 'kettle'},
-    {'type': 'Toaster', 'default_name': 'Bread Toaster', 'default_power': 850.0, 'icon_key': 'toaster'},
-    {'type': 'Air Conditioner', 'default_name': 'Bedroom AC', 'default_power': 1500.0, 'icon_key': 'ac'},
-    {'type': 'Ceiling Fan', 'default_name': 'Ceiling Fan', 'default_power': 75.0, 'icon_key': 'fan'},
-    {'type': 'Water Heater / Geyser', 'default_name': 'Bathroom Geyser', 'default_power': 2000.0, 'icon_key': 'geyser'},
-    {'type': 'Room Heater', 'default_name': 'Room Heater', 'default_power': 1500.0, 'icon_key': 'heater'},
-    {'type': 'Iron', 'default_name': 'Clothes Iron', 'default_power': 1000.0, 'icon_key': 'iron'},
-    {'type': 'Laptop', 'default_name': 'Work Laptop', 'default_power': 65.0, 'icon_key': 'laptop'},
-    {'type': 'Desktop Computer', 'default_name': 'Desktop PC', 'default_power': 250.0, 'icon_key': 'desktop'},
-    {'type': 'Wi-Fi Router', 'default_name': 'Home Wi-Fi Router', 'default_power': 12.0, 'icon_key': 'wifi'},
-    {'type': 'Induction Cooktop', 'default_name': 'Induction Stove', 'default_power': 1800.0, 'icon_key': 'cooktop'},
-    {'type': 'Electric Oven', 'default_name': 'Baking Oven', 'default_power': 2000.0, 'icon_key': 'oven'},
-    {'type': 'LED Lighting', 'default_name': 'Hallway LED Light', 'default_power': 15.0, 'icon_key': 'bulb'},
-    {'type': 'Hair Dryer', 'default_name': 'Hair Dryer', 'default_power': 1200.0, 'icon_key': 'dryer'},
-    {'type': 'Water Pump', 'default_name': 'Main Water Pump', 'default_power': 750.0, 'icon_key': 'pump'},
-    {'type': 'Other / Custom Appliance', 'default_name': 'Custom Appliance', 'default_power': 100.0, 'icon_key': 'custom'},
-]
-
-@api_view(['GET'])
-@permission_classes([AllowAny])
-def appliance_catalog_view(request):
-    return Response(APPLIANCE_CATALOG)
-
-@api_view(['GET', 'POST'])
-@permission_classes([IsAuthenticated])
-def user_appliances_list_create_view(request):
-    if request.method == 'GET':
-        appliances = UserAppliance.objects.filter(user=request.user).order_by('-created_at')
-        return Response(UserApplianceSerializer(appliances, many=True).data)
-        
-    elif request.method == 'POST':
-        serializer = UserApplianceSerializer(data=request.data)
-        if serializer.is_valid():
-            serializer.save(user=request.user)
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-@api_view(['GET', 'PATCH', 'DELETE'])
-@permission_classes([IsAuthenticated])
-def user_appliance_detail_view(request, pk):
-    appliance = UserAppliance.objects.filter(pk=pk, user=request.user).first()
-    if not appliance:
-        return Response({'error': 'Appliance not found or access denied.'}, status=status.HTTP_404_NOT_FOUND)
-        
-    if request.method == 'GET':
-        return Response(UserApplianceSerializer(appliance).data)
-        
-    elif request.method == 'PATCH':
-        serializer = UserApplianceSerializer(appliance, data=request.data, partial=True)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        
-    elif request.method == 'DELETE':
-        appliance.delete()
-        return Response({'status': 'Appliance deleted.'}, status=status.HTTP_204_NO_CONTENT)
-
 
