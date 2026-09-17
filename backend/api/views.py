@@ -253,6 +253,11 @@ def dashboard_summary(request):
                 'energy_kwh': round(prev_month_energy, 2),
                 'cost': round(prev_month_cost, 2),
                 'variance_pct': prev_month_var_pct
+            },
+            'current_month': {
+                'label': f"Current Month ({sim_today_start.strftime('%b %Y')})",
+                'energy_kwh': round(curr_month_energy, 2),
+                'cost': round(curr_month_energy * base_rate, 2)
             }
         },
         'status': f'Live Data ({refit_house.display_name})' if is_refit else f'Demo Data ({refit_house.display_name})',
