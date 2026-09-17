@@ -15,8 +15,5 @@ urlpatterns = [
     path('profile/', views.profile_view, name='profile'),
     path('admin/users/', views.admin_users_view, name='admin_users'),
     path('admin/users/<int:user_id>/', views.admin_user_detail_view, name='admin_user_detail'),
-    path('appliance-catalog/', views.appliance_catalog_view, name='appliance_catalog'),
-    path('user-appliances/', views.user_appliances_list_create_view, name='user_appliances'),
-    path('user-appliances/<int:pk>/', views.user_appliance_detail_view, name='user_appliance_detail'),
 ]
 

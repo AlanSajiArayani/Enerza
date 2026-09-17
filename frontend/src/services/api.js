@@ -80,31 +80,5 @@ export const askAiAdvisor = async (question) => {
   return response.data;
 };
 
-export const getApplianceCatalog = async () => {
-  const response = await api.get('/appliance-catalog/');
-  return response.data;
-};
-
-export const getUserAppliances = async () => {
-  const response = await api.get('/user-appliances/');
-  return response.data;
-};
-
-export const createUserAppliance = async (data) => {
-  const response = await api.post('/user-appliances/', data);
-  return response.data;
-};
-
-export const updateUserAppliance = async (id, data) => {
-  const response = await api.patch(`/user-appliances/${id}/`, data);
-  return response.data;
-};
-
-export const deleteUserAppliance = async (id) => {
-  const response = await api.delete(`/user-appliances/${id}/`);
-  return response.data;
-};
-
 export default api;
-
 

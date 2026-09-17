@@ -34,6 +34,20 @@ def create_or_update_user_profile(sender, instance, created, **kwargs):
                 instance.profile.role = 'admin'
                 instance.profile.save()
 
+class REFITHousehold(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='refit_household')
+    house_number = models.IntegerField(unique=True)
+    display_name = models.CharField(max_length=100)
+    data_file = models.CharField(max_length=255)
+    data_source = models.CharField(max_length=50, default='refit')
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.display_name} (House {self.house_number}) -> {self.user.username}"
+
+
 class UserAppliance(models.Model):
     POWER_CATEGORY_CHOICES = (
         ('low', 'Low Power'),
@@ -53,15 +67,7 @@ class UserAppliance(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
-    def save(self, *args, **kwargs):
-        if self.rated_power_watts < 300:
-            self.power_category = 'low'
-        elif self.rated_power_watts <= 1000:
-            self.power_category = 'moderate'
-        else:
-            self.power_category = 'high'
-        super().save(*args, **kwargs)
-
     def __str__(self):
-        return f"{self.name} ({self.user.username})"
+        return f"{self.user.username} - {self.name} ({self.rated_power_watts}W)"
+
 

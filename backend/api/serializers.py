@@ -1,9 +1,14 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
-from .models import UserProfile, UserAppliance
+from .models import UserProfile, REFITHousehold
+
+class REFITHouseholdSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = REFITHousehold
+        fields = ['id', 'house_number', 'display_name', 'data_file', 'data_source', 'is_active', 'created_at']
+        read_only_fields = ['id', 'house_number', 'display_name', 'data_file', 'data_source', 'is_active', 'created_at']
 
 class UserProfileSerializer(serializers.ModelSerializer):
-
     class Meta:
         model = UserProfile
         fields = [
@@ -15,11 +20,12 @@ class UserProfileSerializer(serializers.ModelSerializer):
 
 class UserSerializer(serializers.ModelSerializer):
     profile = UserProfileSerializer(read_only=True)
+    refit_household = REFITHouseholdSerializer(read_only=True)
     role = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'is_staff', 'is_superuser', 'role', 'profile']
+        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'is_staff', 'is_superuser', 'role', 'profile', 'refit_household']
 
     def get_role(self, obj):
         if hasattr(obj, 'profile'):
@@ -56,14 +62,3 @@ class RegisterSerializer(serializers.ModelSerializer):
             is_superuser=False
         )
         return user
-
-class UserApplianceSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = UserAppliance
-        fields = [
-            'id', 'name', 'appliance_type', 'rated_power_watts',
-            'power_category', 'icon_key', 'iot_enabled',
-            'iot_device_name', 'iot_status', 'created_at', 'updated_at'
-        ]
-        read_only_fields = ['id', 'power_category', 'created_at', 'updated_at']
-

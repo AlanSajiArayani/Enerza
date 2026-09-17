@@ -118,6 +118,8 @@ const Dashboard = () => {
   };
 
   useEffect(() => {
+    setData(null);
+    setLoading(true);
     fetchDashboard(null);
   }, []);
 
@@ -192,6 +194,21 @@ const Dashboard = () => {
     );
   }
 
+  /* Unassigned household state */
+  if (data && data.household_assigned === false) {
+    return (
+      <div className="page-enter glass-panel rounded-2xl p-12 text-center flex flex-col items-center gap-4">
+        <div className="w-12 h-12 rounded-2xl flex items-center justify-center" style={{ background: 'rgba(59,130,246,0.1)', border: '1px solid rgba(59,130,246,0.2)' }}>
+          <Zap size={24} style={{ color: '#3b82f6' }} />
+        </div>
+        <div>
+          <h2 className="text-lg font-semibold text-white mb-1">No Household Assigned</h2>
+          <p className="text-sm" style={{ color: '#64748b' }}>{data.message || 'No REFIT household is assigned to this account.'}</p>
+        </div>
+      </div>
+    );
+  }
+
   /* Error */
   if (error && !data) {
     return (
@@ -224,7 +241,9 @@ const Dashboard = () => {
         <div>
           <p className="text-[10px] font-semibold tracking-widest uppercase mb-1.5" style={{ color: '#334155' }}>Overview</p>
           <h1 className="text-2xl font-bold text-white tracking-tight">Energy Intelligence</h1>
-          <p className="text-[13px] mt-1" style={{ color: '#64748b' }}>Replaying historical REFIT smart-meter measurements.</p>
+          <p className="text-[13px] mt-1" style={{ color: '#64748b' }}>
+            Replaying historical {data?.household?.display_name || 'REFIT'} smart-meter measurements.
+          </p>
         </div>
         <div className="flex items-center gap-2 px-3 py-1.5 rounded-full text-[11px] font-semibold tracking-wide"
           style={{ background: 'rgba(6,182,212,0.08)', border: '1px solid rgba(6,182,212,0.18)', color: '#22d3ee' }}>
@@ -244,7 +263,7 @@ const Dashboard = () => {
               <div className="flex items-center space-x-2 mb-1">
                 <span className="text-[10px] font-bold uppercase tracking-wider text-blue-400">Historical Replay</span>
                 <span className="text-slate-500 text-[10px]">•</span>
-                <span className="text-[10px] text-slate-400">REFIT House 1</span>
+                <span className="text-[10px] text-slate-400">{data?.household?.display_name || 'REFIT Household'}</span>
               </div>
               <div className="text-lg font-bold text-white tracking-tight mt-0.5">
                 {formatSimTime(currentSimTime || data.simulation_time)}
