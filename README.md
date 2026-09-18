@@ -151,6 +151,47 @@ python manage.py seed_refit_households
 
 ---
 
+## 🌍 Production Deployment
+
+Enerza is fully decoupled and ready for production deployment using industry-standard configurations.
+
+### 1. Docker & Docker Compose (Recommended)
+You can deploy the entire stack (Frontend, Backend, and PostgreSQL) on any VPS using the provided `docker-compose.prod.yml`.
+
+```bash
+# Set your production secrets in the environment
+export SECRET_KEY="your-secure-secret"
+export GEMINI_API_KEY="your-gemini-key"
+
+# Build and start all services in detached mode
+docker-compose -f docker-compose.prod.yml up --build -d
+```
+*Note: The frontend will be served on port `80` via an optimized Nginx container, and the Django backend on port `8000` via Gunicorn.*
+
+### 2. Deploying on Render (Infrastructure-as-Code)
+We provide a `render.yaml` Blueprint to fully automate deployment on [Render.com](https://render.com).
+1. Fork or push this repository to GitHub.
+2. In the Render Dashboard, click **New > Blueprint**.
+3. Connect your repository.
+4. Render will automatically provision a PostgreSQL database, deploy the Django backend (applying migrations), and deploy the Vite React frontend globally on their CDN.
+
+### 3. Deploying on Vercel
+A `vercel.json` is included in the project root to support deploying the monorepo (both the Vite React frontend and Django backend) directly on Vercel.
+1. Install the Vercel CLI or connect your GitHub repository to Vercel.
+2. The `vercel.json` automatically routes `/api/*` traffic to the backend service and all other traffic to the frontend service.
+3. Ensure you set `SECRET_KEY`, `GEMINI_API_KEY`, and `DATABASE_URL` in your Vercel project settings.
+
+### 4. Deploying on Heroku
+A `Procfile` is included for easy PaaS deployment.
+```bash
+heroku create enerza-backend
+heroku config:set SECRET_KEY="your-secret" GEMINI_API_KEY="your-key" ALLOWED_HOSTS="enerza-backend.herokuapp.com"
+git push heroku main
+heroku run python manage.py migrate
+```
+
+---
+
 ## 📂 Project Structure
 
 ```text

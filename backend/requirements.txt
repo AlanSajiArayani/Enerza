@@ -7,3 +7,10 @@ scikit-learn
 pyarrow
 requests
 djangorestframework-simplejwt
+xgboost
+google-genai
+python-dotenv
+gunicorn
+whitenoise
+dj-database-url
+psycopg2-binary

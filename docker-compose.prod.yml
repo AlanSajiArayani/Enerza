@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_DB=enerza
+      - POSTGRES_USER=enerza_user
+      - POSTGRES_PASSWORD=supersecretpassword
+    ports:
+      - "5432:5432"
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: sh -c "python manage.py migrate && gunicorn --bind 0.0.0.0:8000 enerza.wsgi:application"
+    volumes:
+      - backend_static:/app/staticfiles
+      - ./data:/app/data
+    ports:
+      - "8000:8000"
+    environment:
+      - DEBUG=False
+      - SECRET_KEY=your-secure-production-secret-key
+      - ALLOWED_HOSTS=*
+      - CORS_ALLOW_ALL_ORIGINS=True
+      - DATABASE_URL=postgres://enerza_user:supersecretpassword@db:5432/enerza
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+    depends_on:
+      - db
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Pass the backend URL (assuming accessed via localhost for local docker-compose prod test)
+        # In real production, this should be the public domain of the backend API
+        - VITE_API_URL=http://localhost:8000/api
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  backend_static:
